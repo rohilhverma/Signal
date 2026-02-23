@@ -2,6 +2,7 @@ import * as cheerio from 'cheerio'
 import axios from 'axios'
 import { response } from 'express'
 import { chromium } from 'playwright'
+import StealthPlugin from 'puppeteer-extra-plugin-stealth'
 
 const rssPaths = [
         'feed',
@@ -39,15 +40,19 @@ const axiosConfig = {
     timeout: 5000
 };
 
+const present = new Date()
+const cutoff = new Date(present.getTime() - (36 * 60 * 60 * 1000))
+
 //javascript code is up and running, need to try on more websites however. 
-
-
 
 
 async function initialScraper(url) {
     const cleanURL = new URL(url)
     const data = await linkBuilder(cleanURL)
-    console.log(data ? data.substring(0, 250) : "DATA IS NULL");
+    if (!data){
+        console.log("Couldn't grab RSS feed")
+        return null
+    }
     const $ = cheerio.load(data, {xmlMode:true})
     let format = 'rss'
     if ($('feed').length){format = 'atom'}
@@ -61,7 +66,19 @@ async function initialScraper(url) {
         "articles": []
     }
     for (const element of items) {
+        const date = $(element).find(formats[format].date).text()
+        if (!date) {date = $(element).find('pubDate').text() || 
+                $(element).find('published').text() || 
+                $(element).find('updated').text() || 
+                $(element).find('dc\\:date').text() ||
+                $(element).find('pubdate').text() ||
+                $(element).find('date').text() ||
+                $(element).find('created').text();
+        }
+        const articleDate = new Date(date)
+        console.log(articleDate)
         const title = $(element).find(formats[format].title).text()
+        if (articleDate < cutoff){console.log(`${title}: Too old, Skipping`);continue}
         let link = $(element).find('link').text()
         if(!link){link = $(element).find(formats[format].link).attr('href')}
         if (!link){continue}
@@ -92,7 +109,17 @@ async function scrapeArticles(url, format) {
             console.log(`Failed to scrape ${url}: ${error.message}`)
             return {articleText: "couldn't be scraped", publishDate: "couldn't be found"}}
         }
+        if (!data){return {articleText: "couldn't be scraped", publishDate: "couldn't be found"}}
         const $ = cheerio.load(data)
+        $(
+        '.c-entry-sidebar, ' +      
+        '.c-byline, ' +             
+        '.c-entry-summary, ' +      
+        '.c-newsletter-signup, ' +  
+        'aside, ' +                 
+        '.native-ad, ' +            
+        '.featured-image-caption'   
+        ).remove();
         const publishDate = 
             $('time').attr('datetime') ||                                     
             $('meta[property="article:published_time"]').attr('content') ||   
@@ -114,31 +141,27 @@ async function linkBuilder(url) {
         const testURL = url + link
         try {
             const response = await axios.get(testURL, axiosConfig)
+            console.log(`RSS Caught: ${testURL}`)
             return response.data
         } catch(err) {
-            if (err.response && (err.response.status === 429 || err.response.status === 403)) {
+            if (err.response && (err.response.status === 429 || err.response.status === 403 || err.response.status === 503)) {
             console.log(`Failed ${testURL}`)
             const xmlData = await javascriptBypasser(testURL)
             if (xmlData){return xmlData}
             else{console.log("Fucking failed")}
         }
-    }
-    return null
-}
-}
 
-async function diagnostic(url) {
-    try {
-        await axios.get(url, axiosConfig)
-        return initialScraper(url)
-    } catch(error) {
-        console.log(`Diagnostic failed: ${error.message}. Switching to javascriptScraper.`)
-        return javascriptBypasser(url)
+        else if (err.response.status === 404){
+            continue
+        }
     }
+    
 }
-
+return null
+}
 
 async function javascriptBypasser(url){ 
+    chromium.use(StealthPlugin())
     const browser = await chromium.launch({headless:true})
     const page = await browser.newPage()
     try {
@@ -177,9 +200,7 @@ async function javascriptHTMLScraper(url){
 
 
 
-const jSON = await initialScraper("https://www.geekwire.com/")
+const jSON = await initialScraper("https://www.technologyreview.com/")
 
-console.log(jSON.articles)
-
-
- 
+console.log(jSON)
+console.log(jSON.articles.length)
