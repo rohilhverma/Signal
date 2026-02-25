@@ -89,7 +89,7 @@ async function initialScraper(url) {
             "link": `${link}`,
             "guid": `${guid}`,
             "text": `${articleTextAndTime.articleText}`,
-            "time": `${articleTextAndTime.publishDate}`,
+            "time": `${articleDate.toISOString()}`,
         })
     }
     return json_
@@ -126,7 +126,7 @@ async function scrapeArticles(url, format) {
             $('meta[name="pubdate"]').attr('content') ||                      
             $('meta[name="date"]').attr('content') ||                         
             null;    
-        const articleText = $(".entry-content p, .c-entry-content p, article p, .article-body p, .story-content p")
+        const articleText = $(".entry-content p, .c-entry-content p, article p, .article-body p, .story-content p, .content__body p, #content--body p, .article-content p, main p")
         .map((index, element) => $(element).text())
         .get()
         .filter(text => text.length > 0)
