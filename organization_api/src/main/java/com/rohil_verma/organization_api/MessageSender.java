@@ -4,11 +4,9 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
-import com.rohil_verma.organization_api.postgres_stuff.links_Database;
-import com.rohil_verma.organization_api.postgres_stuff.links_repository;
+import com.rohil_verma.organization_api.postgres_stuff.LinksRepository;
 
 import io.awspring.cloud.sqs.operations.SqsTemplate;
-import jakarta.persistence.Entity;
 
 
 
@@ -19,13 +17,12 @@ public class MessageSender {
     private SqsTemplate sqsTemplate;
 
     @Autowired
-    private links_repository links_repository;
+    private LinksRepository LinksRepository;
 
     @Value("${news_scraper_queue}")
     private String queueURL;
 
     public void sendScrapingTask(String string) {
-        // TODO Auto-generated method stub
         sqsTemplate.send(queueURL,"Hello");
         System.out.println("Message sent");
     }
