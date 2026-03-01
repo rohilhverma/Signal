@@ -19,6 +19,8 @@ public class LinksDatabase{
     private String username;
 
     private String password;
+
+    private String email;
     
     private String websiteURL;
 
@@ -26,6 +28,14 @@ public class LinksDatabase{
 
     
     public LinksDatabase() {
+    }
+
+    public static LinksDatabase userSignIn(String username, String email, String websiteURL){
+        LinksDatabase link = new LinksDatabase();
+        link.username = username;
+        link.email = email;
+        link.websiteURL = websiteURL;
+        return link;
     }
 
     public static LinksDatabase withWebsite(String username, String websiteURL) {
@@ -42,9 +52,10 @@ public class LinksDatabase{
         return link;
     }
 
-    public static LinksDatabase FullUserInformation(String username, String password, LocalTime userUpdateTime){ 
+    public static LinksDatabase FullUserInformation(String username, String email, String password, LocalTime userUpdateTime){ 
         LinksDatabase link = new LinksDatabase();
         link.username = username;
+        link.email = email;
         link.password = password;
         link.userUpdateTime = userUpdateTime;
         return link;
@@ -54,8 +65,14 @@ public class LinksDatabase{
         return id;
     }
 
-    
+    public String getEmail() {
+        return email;
+    }
 
+    public void setEmail(String email) {
+        this.email = email;
+    }
+    
     public String getPassword() {return password;}
 
     public void setId(Integer id) {

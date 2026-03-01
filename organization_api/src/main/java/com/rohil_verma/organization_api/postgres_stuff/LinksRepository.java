@@ -21,14 +21,14 @@ public interface LinksRepository extends JpaRepository<LinksDatabase, Integer> {
     @Query("SELECT DISTINCT l.websiteURL FROM LinksDatabase l")
     List<String> findAllWebsites();
 
-    @Query("SELECT DISTINCT l.id FROM LinksDatabase l WHERE l.username = :username")
-    Integer findUserIdFromUsername(@Param("username")String username);
+    @Query("SELECT DISTINCT l.email FROM LinksDatabase l WHERE l.username = :username")
+    String findUserEmailFromUsername(@Param("username")String username);
 
-    @Query("SELECT DISTINCT l.username FROM LinksDatabase l where L.id = :id")
-    String findUsernameFromID(@Param("id")Integer id);
+    @Query("SELECT DISTINCT l.username FROM LinksDatabase l where l.email = :email")
+    String findUsernameFromEmail(@Param("email")String email);
 
     @Transactional
-    void deleteByUsernameAndWebsiteURL(String username, String website);
+    void deleteByUsernameAndWebsiteURL(String username, String websiteURL);
 
 
 

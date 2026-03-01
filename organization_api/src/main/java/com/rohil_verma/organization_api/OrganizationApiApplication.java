@@ -18,9 +18,22 @@ public class OrganizationApiApplication {
 	CommandLineRunner commandLineRunner(LinksRepository repository) {
 		return args -> {
 			if (repository.count() == 0) {
-				repository.save(LinksDatabase.withWebsite("rohil", "https://google.com"));
-				repository.save(LinksDatabase.withWebsite("rohil", "https://facebook.com"));
-				repository.save(LinksDatabase.withWebsite("other_user", "https://twitter.com"));
+				repository.save(LinksDatabase.userSignIn("rohil", "rohil@gmail.com", "https://google.com"));
+				repository.save(LinksDatabase.userSignIn("rohil", "rohil@gmail.com", "https://facebook.com"));
+				repository.save(LinksDatabase.userSignIn("rohil", "rohil@gmail.com", "https://techcrunch.com"));
+
+				// User 2 - sarah, news junkie
+				repository.save(LinksDatabase.userSignIn("sarah_k", "sarah@outlook.com", "https://nytimes.com"));
+				repository.save(LinksDatabase.userSignIn("sarah_k", "sarah@outlook.com", "https://bbc.com"));
+
+				// User 3 - dev_mike, tech focused
+				repository.save(LinksDatabase.userSignIn("dev_mike", "mike@proton.me", "https://github.blog"));
+				repository.save(LinksDatabase.userSignIn("dev_mike", "mike@proton.me", "https://stackoverflow.blog"));
+				repository.save(LinksDatabase.userSignIn("dev_mike", "mike@proton.me", "https://hackernews.com"));
+
+				// User 4 - jenny, single site
+				repository.save(LinksDatabase.userSignIn("jenny_w", "jenny@yahoo.com", "https://medium.com"));
+
 				System.out.println("--- Data Seeded Successfully ---");
 			} else {
 				System.out.println("--- Data already exists ---");

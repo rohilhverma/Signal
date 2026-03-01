@@ -16,9 +16,6 @@ public class MessageSender {
     @Autowired
     private SqsTemplate sqsTemplate;
 
-    @Autowired
-    private LinksRepository LinksRepository;
-
     @Value("${news_scraper_queue}")
     private String queueURL;
 

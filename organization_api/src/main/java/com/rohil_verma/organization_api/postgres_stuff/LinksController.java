@@ -21,13 +21,13 @@ public class LinksController {
     @Autowired
     private LinksService linksService;
 
-    @GetMapping("/links/id")
-    public List<String> WebsitesForUser(@RequestParam String param) {
-        return linksService.getWebsitesForUser(param);
+    @GetMapping("/links/user")
+    public List<String> WebsitesForUser(@RequestParam String username) {
+        return linksService.getWebsitesForUser(username);
     }
 
     @GetMapping("/websites/all")
-    public List<String> AllWebsites(@RequestParam String param) {
+    public List<String> AllWebsites() {
         return linksService.getWebsites();
     }
 
@@ -37,13 +37,13 @@ public class LinksController {
     }
 
     @GetMapping("/user/info")
-    public UserInformationDTO GetUserInformation(@RequestBody String entity) {  
-    return linksService.getUserInformation(entity);
+    public UserInformationDTO GetUserInformation(@RequestParam String username) {  
+    return linksService.getUserInformation(username);
     }
 
     @DeleteMapping("/user")
-    public ResponseEntity<String> DeleteUser(@RequestBody LinksDatabase entity){
-        return linksService.deleteUser(entity);
+    public ResponseEntity<String> DeleteUser(@RequestBody LinksDatabase withWebsite){
+        return linksService.deleteUser(withWebsite);
     }
 
     @DeleteMapping("/user/url")

@@ -12,8 +12,8 @@ public class LinksService {
     @Autowired
     private LinksRepository linksRepository;
 
-    public List<String> getWebsitesForUser(String param){
-        return linksRepository.findUniqueLinksByUsername(param);
+    public List<String> getWebsitesForUser(String username){
+        return linksRepository.findUniqueLinksByUsername(username);
     }
 
     public List<String> getWebsites(){
@@ -31,10 +31,11 @@ public class LinksService {
 
     public UserInformationDTO getUserInformation(String username){
         try{ 
-            Integer id = linksRepository.findUserIdFromUsername(username);
+            String email = linksRepository.findUserEmailFromUsername(username);
             List<String> websites = linksRepository.findUniqueLinksByUsername(username);
-            return new UserInformationDTO(id, username, websites);
+            return new UserInformationDTO(email, username, websites);
         } catch(Exception e){
+            e.printStackTrace();  
             return new UserInformationDTO(null,null, null);
          }
     }
