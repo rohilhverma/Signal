@@ -6,11 +6,16 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 
+import com.rohil_verma.organization_api.MessageSender;
+
 @Service
 public class LinksService {
     
     @Autowired
     private LinksRepository linksRepository;
+
+    @Autowired
+    private MessageSender messageSender;
 
     public List<String> getWebsitesForUser(String username){
         return linksRepository.findUniqueLinksByUsername(username);
@@ -23,6 +28,7 @@ public class LinksService {
     public ResponseEntity<String> saveUser(LinksDatabase user){ 
         try {
             linksRepository.save(user);
+            messageSender.sendScrapingTaskToWorkers(user.getUsername(), user.getWebsiteURL());
             return ResponseEntity.ok("User Saved");
         } catch(Exception e){
             return ResponseEntity.status(500).body("Failed to Upload User!");
@@ -56,6 +62,11 @@ public class LinksService {
             System.out.println("Failed to Delete Website");
         }
     }
+
+    // public ResponseEntity<String> scheduledScrapes() {
+    //     //Not here yet, but need to configure something to scrape all the users based on the time
+    //     //List<String> websitesForUser = linksRepository.findUniqueLinksByUsername(username);
+    // }
 
 
 }

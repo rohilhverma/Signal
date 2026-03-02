@@ -7,6 +7,8 @@ import org.springframework.context.annotation.Bean;
 
 import com.rohil_verma.organization_api.postgres_stuff.LinksDatabase;
 import com.rohil_verma.organization_api.postgres_stuff.LinksRepository;
+// import com.rohil_verma.organization_api.MessageSender;
+
 @SpringBootApplication
 public class OrganizationApiApplication {
 
@@ -15,7 +17,7 @@ public class OrganizationApiApplication {
 	}
 
 	@Bean
-	CommandLineRunner commandLineRunner(LinksRepository repository) {
+	CommandLineRunner commandLineRunner(LinksRepository repository, MessageSender messageSender) {
 		return args -> {
 			if (repository.count() == 0) {
 				repository.save(LinksDatabase.userSignIn("rohil", "rohil@gmail.com", "https://google.com"));
@@ -37,9 +39,8 @@ public class OrganizationApiApplication {
 				System.out.println("--- Data Seeded Successfully ---");
 			} else {
 				System.out.println("--- Data already exists ---");
-			}
-			repository.findAll().forEach(x -> System.out.println(x));
+				messageSender.sendScrapingTaskToWorkers("rohil", "https://google.com");
+			};
+			// repository.findAll().forEach(x -> System.out.println(x));
 		};
-	}
-	
-}
+		}}
