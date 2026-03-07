@@ -1,8 +1,7 @@
 import * as cheerio from 'cheerio'
 import axios from 'axios'
-import { response } from 'express'
-import { chromium } from 'playwright'
-import StealthPlugin from 'puppeteer-extra-plugin-stealth'
+import { chromium } from 'playwright-core'
+import chromiumLambda from '@sparticuz/chromium'
 
 const rssPaths = [
         'feed',
@@ -40,11 +39,18 @@ const axiosConfig = {
     timeout: 5000
 };
 
+export const handler = async(event, useContext) => {
+    const websites = event.websites
+    const jSON ={}
+    for (const link of websites){
+        const scrapedWebsite = await initialScraper(link)
+        jSON[link] = scrapedWebsite
+    }
+    return JSON.stringify(jSON)
+}
+
 const present = new Date()
 const cutoff = new Date(present.getTime() - (36 * 60 * 60 * 1000))
-
-//javascript code is up and running, need to try on more websites however. 
-
 
 async function initialScraper(url) {
     const cleanURL = new URL(url)
@@ -66,7 +72,7 @@ async function initialScraper(url) {
         "articles": []
     }
     for (const element of items) {
-        const date = $(element).find(formats[format].date).text()
+        let date = $(element).find(formats[format].date).text()
         if (!date) {date = $(element).find('pubDate').text() || 
                 $(element).find('published').text() || 
                 $(element).find('updated').text() || 
@@ -151,7 +157,9 @@ async function linkBuilder(url) {
             else{console.log("Fucking failed")}
         }
 
-        else if (err.response.status === 404){
+        else if (err.response && err.response.status === 404){
+            continue
+        } else {
             continue
         }
     }
@@ -160,9 +168,12 @@ async function linkBuilder(url) {
 return null
 }
 
-async function javascriptBypasser(url){ 
-    chromium.use(StealthPlugin())
-    const browser = await chromium.launch({headless:true})
+async function javascriptBypasser(url){
+    const browser = await chromium.launch({
+        args: chromiumLambda.args,
+        executablePath: await chromiumLambda.executablePath(),
+        headless: chromiumLambda.headless,
+    })
     const page = await browser.newPage()
     try {
         const baseUrl = new URL(url).origin
@@ -182,12 +193,16 @@ async function javascriptBypasser(url){
 }
 
 async function javascriptHTMLScraper(url){
-    const browser = await chromium.launch({headless:true})
+    const browser = await chromium.launch({
+        args: chromiumLambda.args,
+        executablePath: await chromiumLambda.executablePath(),
+        headless: chromiumLambda.headless,
+    })
     const page = await browser.newPage()
     try {
         console.log(`Playwright is trying to grab Article HTML: ${url}`)
         await page.goto(url, { waitUntil: 'domcontentloaded' })
-        await page.waitForSelector('.entry-content, .c-entry-content, .article-body, article', { timeout: 15000 });
+        await page.waitForSelector('.entry-content, .c-entry-content, .article-body, article', { timeout: 10000 });
         const rawHTML = await page.content()
         return rawHTML
     } catch(error){
@@ -197,10 +212,3 @@ async function javascriptHTMLScraper(url){
         await browser.close()
     }
 }
-
-
-
-const jSON = await initialScraper("https://www.technologyreview.com/")
-
-console.log(jSON)
-console.log(jSON.articles.length)
