@@ -40,12 +40,15 @@ const axiosConfig = {
 };
 
 export const handler = async(event, useContext) => {
-    const websites = event.websites
+    const body = JSON.parse(event.Records[0].body)
+    const websites = body.websites
     const jSON ={}
     for (const link of websites){
         const scrapedWebsite = await initialScraper(link)
         jSON[link] = scrapedWebsite
     }
+    jSON["username"] = event.username;
+    console.log(JSON.stringify(jSON, null, 2))
     return JSON.stringify(jSON)
 }
 

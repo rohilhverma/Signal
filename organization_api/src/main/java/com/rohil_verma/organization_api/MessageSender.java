@@ -1,5 +1,7 @@
 package com.rohil_verma.organization_api;
 
+import java.util.List;
+
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -19,8 +21,9 @@ public class MessageSender {
     @Value("${news_scraper_queue}")
     private String queueURL;
 
-    public void sendScrapingTaskToWorkers(String username, String websiteURL) {
-        String message = String.format("{\"username\":\"%s\",\"websiteURL\":\"%s\"}", username, websiteURL);
+    public void sendScrapingTaskToWorkers(String username, List<String> websitesURL) {
+        String websites = "[\"" + String.join("\",\"", websitesURL) + "\"]";
+        String message = String.format("{\"username\":\"%s\",\"websites\":%s}", username, websites);
         sqsTemplate.send(queueURL, message);
     }
 

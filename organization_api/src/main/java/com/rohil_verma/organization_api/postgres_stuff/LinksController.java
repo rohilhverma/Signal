@@ -32,8 +32,8 @@ public class LinksController {
     }
 
     @PostMapping("/user")
-    public ResponseEntity<String> AddUser(@RequestBody LinksDatabase entity) {        
-        return linksService.saveUser(entity);
+    public ResponseEntity<String> AddUser(@RequestBody LinksDatabase entity) {
+        return linksService.addUser(entity);
     }
 
     @GetMapping("/user/info")
@@ -51,17 +51,10 @@ public class LinksController {
         linksService.deleteWebsiteForUser(withWebsite);
     }
 
-
-
-
-    
-    
-    
-
-
-
-
-    
+    @PostMapping("/user/task")
+    public ResponseEntity<String> SendScrapingTask(@RequestBody LinksDatabase entity) {
+        return linksService.sendScrapingTask(entity);
+    }  
     
 
 

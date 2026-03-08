@@ -25,16 +25,6 @@ public class LinksService {
         return linksRepository.findAllWebsites();
     }
 
-    public ResponseEntity<String> saveUser(LinksDatabase user){ 
-        try {
-            linksRepository.save(user);
-            messageSender.sendScrapingTaskToWorkers(user.getUsername(), user.getWebsiteURL());
-            return ResponseEntity.ok("User Saved");
-        } catch(Exception e){
-            return ResponseEntity.status(500).body("Failed to Upload User!");
-        }
-            }
-
     public UserInformationDTO getUserInformation(String username){
         try{ 
             String email = linksRepository.findUserEmailFromUsername(username);
@@ -63,10 +53,26 @@ public class LinksService {
         }
     }
 
-    // public ResponseEntity<String> scheduledScrapes() {
-    //     //Not here yet, but need to configure something to scrape all the users based on the time
-    //     //List<String> websitesForUser = linksRepository.findUniqueLinksByUsername(username);
-    // }
+    public ResponseEntity<String> addUser(LinksDatabase user){
+        try{
+            linksRepository.save(user);
+            List<String> websites = linksRepository.findUniqueLinksByUsername(user.getUsername());
+            messageSender.sendScrapingTaskToWorkers(user.getUsername(), websites);
+            return ResponseEntity.ok("User Saved");
+        } catch(Exception e){
+            return ResponseEntity.status(500).body("Failed to Save User");
+        }
+    }
+
+    public ResponseEntity<String> sendScrapingTask(LinksDatabase user){
+        try{
+            List<String> websites = linksRepository.findUniqueLinksByUsername(user.getUsername());
+            messageSender.sendScrapingTaskToWorkers(user.getUsername(), websites);
+            return ResponseEntity.ok("Scraping Task Sent");
+        } catch(Exception e){
+            return ResponseEntity.status(500).body("Failed to Send Scraping Task");
+        }
+    }
 
 
 }
