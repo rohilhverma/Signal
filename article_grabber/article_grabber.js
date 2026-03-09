@@ -2,6 +2,12 @@ import * as cheerio from 'cheerio'
 import axios from 'axios'
 import { chromium } from 'playwright-core'
 import chromiumLambda from '@sparticuz/chromium'
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb'
+import { DynamoDBDocumentClient, GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb'
+
+const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}))
+
+
 
 const rssPaths = [
         'feed',
@@ -47,7 +53,7 @@ export const handler = async(event, useContext) => {
         const scrapedWebsite = await initialScraper(link)
         jSON[link] = scrapedWebsite
     }
-    jSON["username"] = event.username;
+    jSON["username"] = body.username;
     console.log(JSON.stringify(jSON, null, 2))
     return JSON.stringify(jSON)
 }
@@ -146,29 +152,50 @@ async function scrapeArticles(url, format) {
     }
 
 async function linkBuilder(url) {
+    const baseUrl = url.origin
+
+    const cached = await dynamo.send(new GetCommand({
+        TableName: 'MyScrapingHandlerTable',
+        Key: { websiteURLs: baseUrl, SK: 'RSS' }
+    }))
+    if (cached.Item) {
+        try {
+            const response = await axios.get(cached.Item.rss_url, axiosConfig)
+            console.log("RSS Feed Found, Using")
+            return response.data
+        } catch(err){
+            const xmlData = await javascriptBypasser(cached.Item.rss_url)
+            if (xmlData){ return xmlData }
+            else { return null }
+        }
+    }
     for (const link of rssPaths){
-        const testURL = url + link
+        const testURL = baseUrl + '/' + link
+        let feedData = null
         try {
             const response = await axios.get(testURL, axiosConfig)
             console.log(`RSS Caught: ${testURL}`)
-            return response.data
+            feedData = response.data
         } catch(err) {
             if (err.response && (err.response.status === 429 || err.response.status === 403 || err.response.status === 503)) {
-            console.log(`Failed ${testURL}`)
-            const xmlData = await javascriptBypasser(testURL)
-            if (xmlData){return xmlData}
-            else{console.log("Fucking failed")}
+                console.log(`Failed ${testURL}`)
+                feedData = await javascriptBypasser(testURL)
+                if (!feedData){ console.log("Fucking failed"); continue }
+            } else {
+                continue
+            }
         }
-
-        else if (err.response && err.response.status === 404){
-            continue
-        } else {
-            continue
+        try {
+            await dynamo.send(new PutCommand({
+                TableName: 'MyScrapingHandlerTable',
+                Item: { websiteURLs: baseUrl, SK: 'RSS', rss_url: testURL }
+            }))
+        } catch(err) {
+            console.log(`DynamoDB PutCommand failed: ${err.message}`)
         }
+        return feedData
     }
-    
-}
-return null
+    return null
 }
 
 async function javascriptBypasser(url){
