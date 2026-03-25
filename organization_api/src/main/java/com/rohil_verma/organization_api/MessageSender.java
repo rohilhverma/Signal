@@ -24,6 +24,7 @@ public class MessageSender {
     public void sendScrapingTaskToWorkers(String username, List<String> websitesURL) {
         String websites = "[\"" + String.join("\",\"", websitesURL) + "\"]";
         String message = String.format("{\"username\":\"%s\",\"websites\":%s}", username, websites);
+        System.out.println(message);
         sqsTemplate.send(queueURL, message);
     }
 

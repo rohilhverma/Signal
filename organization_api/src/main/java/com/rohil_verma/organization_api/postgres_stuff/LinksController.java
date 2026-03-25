@@ -12,12 +12,10 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 
-
-
 @RestController
 @RequestMapping("/")
 public class LinksController {
-    
+
     @Autowired
     private LinksService linksService;
 
@@ -32,30 +30,28 @@ public class LinksController {
     }
 
     @PostMapping("/user")
-    public ResponseEntity<String> AddUser(@RequestBody LinksDatabase entity) {
-        return linksService.addUser(entity);
+    public ResponseEntity<String> AddUser(@RequestBody UserRequest request) {
+        return linksService.addUser(request.getUsername(), request.getEmail(), request.getWebsiteURL(),
+            request.getContentMode(), request.getWebsiteContentMode());
     }
 
     @GetMapping("/user/info")
-    public UserInformationDTO GetUserInformation(@RequestParam String username) {  
-    return linksService.getUserInformation(username);
+    public UserInformationDTO GetUserInformation(@RequestParam String username) {
+        return linksService.getUserInformation(username);
     }
 
     @DeleteMapping("/user")
-    public ResponseEntity<String> DeleteUser(@RequestBody LinksDatabase withWebsite){
-        return linksService.deleteUser(withWebsite);
+    public ResponseEntity<String> DeleteUser(@RequestBody UserRequest request) {
+        return linksService.deleteUser(request.getUsername());
     }
 
     @DeleteMapping("/user/url")
-    public void deleteWebsiteForUser(@RequestBody LinksDatabase withWebsite) {
-        linksService.deleteWebsiteForUser(withWebsite);
+    public void deleteWebsiteForUser(@RequestBody UserRequest request) {
+        linksService.deleteWebsiteForUser(request.getUsername(), request.getWebsiteURL());
     }
 
     @PostMapping("/user/task")
-    public ResponseEntity<String> SendScrapingTask(@RequestBody LinksDatabase entity) {
-        return linksService.sendScrapingTask(entity);
-    }  
-    
-
-
+    public ResponseEntity<String> SendScrapingTask(@RequestBody UserRequest request) {
+        return linksService.sendScrapingTask(request.getUsername());
+    }
 }

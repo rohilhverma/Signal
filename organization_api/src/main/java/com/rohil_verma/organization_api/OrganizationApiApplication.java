@@ -4,9 +4,10 @@ import org.springframework.boot.CommandLineRunner;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Bean;
+import org.springframework.http.ResponseEntity;
 
-import com.rohil_verma.organization_api.postgres_stuff.LinksDatabase;
-import com.rohil_verma.organization_api.postgres_stuff.LinksRepository;
+import com.rohil_verma.organization_api.postgres_stuff.User;
+import com.rohil_verma.organization_api.postgres_stuff.UserRepository;
 import com.rohil_verma.organization_api.postgres_stuff.LinksService;
 
 @SpringBootApplication
@@ -17,30 +18,43 @@ public class OrganizationApiApplication {
 	}
 
 	@Bean
-	CommandLineRunner commandLineRunner(LinksRepository repository, LinksService linksService) {
+	CommandLineRunner commandLineRunner(UserRepository userRepository, LinksService linksService) {
 		return args -> {
-			if (repository.count() == 0) {
-				repository.save(LinksDatabase.userSignIn("rohil", "rohil@gmail.com", "https://google.com"));
-				repository.save(LinksDatabase.userSignIn("rohil", "rohil@gmail.com", "https://facebook.com"));
-				repository.save(LinksDatabase.userSignIn("rohil", "rohil@gmail.com", "https://techcrunch.com"));
+			if (userRepository.count() == 0) {
+				// rohil: "short" across all sites, techcrunch overridden to "analytics"
+				User rohil = new User("rohil", "rohil@gmail.com");
+				rohil.setContentMode("short");
+				rohil.addSubscription("https://theverge.com", null);
+				rohil.addSubscription("https://arstechnica.com", null);
+				rohil.addSubscription("https://techcrunch.com", "analytics");
+				userRepository.save(rohil);
 
-				// User 2 - sarah, news junkie
-				repository.save(LinksDatabase.userSignIn("sarah_k", "sarah@outlook.com", "https://nytimes.com"));
-				repository.save(LinksDatabase.userSignIn("sarah_k", "sarah@outlook.com", "https://bbc.com"));
+				// sarah: no default, each site has its own mode
+				User sarah = new User("sarah_k", "sarah@outlook.com");
+				sarah.addSubscription("https://nytimes.com", "long");
+				sarah.addSubscription("https://bbc.com", "short");
+				userRepository.save(sarah);
 
-				// User 3 - dev_mike, tech focused
-				repository.save(LinksDatabase.userSignIn("dev_mike", "mike@proton.me", "https://github.blog"));
-				repository.save(LinksDatabase.userSignIn("dev_mike", "mike@proton.me", "https://stackoverflow.blog"));
-				repository.save(LinksDatabase.userSignIn("dev_mike", "mike@proton.me", "https://hackernews.com"));
+				// mike: "default" across all, one override
+				User mike = new User("dev_mike", "mike@proton.me");
+				mike.setContentMode("default");
+				mike.addSubscription("https://github.blog", "analytics");
+				mike.addSubscription("https://stackoverflow.blog", null);
+				mike.addSubscription("https://hackernews.com", null);
+				userRepository.save(mike);
 
-				// User 4 - jenny, single site
-				repository.save(LinksDatabase.userSignIn("jenny_w", "jenny@yahoo.com", "https://medium.com"));
+				// jenny: "long" across all
+				User jenny = new User("jenny_w", "jenny@yahoo.com");
+				jenny.setContentMode("long");
+				jenny.addSubscription("https://medium.com", null);
+				userRepository.save(jenny);
 
 				System.out.println("--- Data Seeded Successfully ---");
 			} else {
 				System.out.println("--- Data already exists ---");
-				linksService.sendScrapingTask(LinksDatabase.withWebsite("rohil", null));
+				ResponseEntity<String> x = linksService.sendScrapingTask("rohil");
+				System.out.println(x.getStatusCode());
 			};
-			// repository.findAll().forEach(x -> System.out.println(x));
 		};
-		}}
+	}
+}
