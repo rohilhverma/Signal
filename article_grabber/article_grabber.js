@@ -7,7 +7,50 @@ import { DynamoDBDocumentClient, GetCommand, PutCommand } from '@aws-sdk/lib-dyn
 
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}))
 
+const TABLE = 'MyScrapingHandlerTable'
+const SK = { RSS: 'RSS' }
 
+async function dbGet(pk, sk) {
+    return dynamo.send(new GetCommand({ TableName: TABLE, Key: { websiteURLs: pk, SK: sk } }))
+}
+
+async function dbPut(item) {
+    return dynamo.send(new PutCommand({ TableName: TABLE, Item: item }))
+}
+
+async function dbGUID(item){
+    const week = Math.floor(Date.now() / 1000) + (7 * 24 * 60 * 60);
+
+    return dynamo.send(new PutCommand({
+        TableName: TABLE,
+        Item: {
+            websiteURLs: `${item}`,
+            SK: "EXISTS",
+            processedAt: new Date().toISOString(),
+            ttl:week
+        }
+    }))
+}
+
+async function guidChecker(guid){
+    return dynamo.send(new GetCommand({TableName: TABLE, Key: {websiteURLs: guid, SK: "EXISTS"}}))
+}
+
+async function newArticle(item){
+    const week = Math.floor(Date.now() / 1000) + (7 * 24 * 60 * 60);
+    return dynamo.send(new PutCommand({
+        TableName: TABLE,
+        Item: {
+            websiteURLs: item.websiteName,
+            SK: item.link,
+            title: item.title_,
+            summary: "",
+            articleText: item.articleText,
+            date: item.date,
+            ttl: week
+        }
+    }))
+}
 
 const rssPaths = [
         'feed',
@@ -46,16 +89,16 @@ const axiosConfig = {
 };
 
 export const handler = async(event, useContext) => {
+    console.log("Raw body:", event.Records[0].body);
     const body = JSON.parse(event.Records[0].body)
-    const websites = body.websites
-    const jSON ={}
-    for (const link of websites){
-        const scrapedWebsite = await initialScraper(link)
-        jSON[link] = scrapedWebsite
+    const website = body.website
+    const scrapedWebsite = await initialScraper(website)
+    const jSON = {
+        username: body.username,
+        website: website,
+        data: scrapedWebsite
     }
-    jSON["username"] = body.username;
     console.log(JSON.stringify(jSON, null, 2))
-    return JSON.stringify(jSON)
 }
 
 const present = new Date()
@@ -75,12 +118,20 @@ async function initialScraper(url) {
     
     const items = $(formats[format].itemSelector).toArray()
     console.log(`--- DEBUG: FOUND ${items.length} ARTICLES --- \n`);
-    const websiteName = $(formats[format].websiteTitle).text()
+    const webName = $(formats[format].websiteTitle).text()
     const json_ = {
-        "publisher": `${websiteName}`,
+        "publisher": `${webName}`,
         "articles": []
     }
+    let existingCount=0
+    let newCount=0
     for (const element of items) {
+        const guid = $(element).find(formats[format].guid).text()
+        const exists = await guidChecker(guid)
+        if (exists.Item){
+            existingCount+=1
+            continue
+        } else {
         let date = $(element).find(formats[format].date).text()
         if (!date) {date = $(element).find('pubDate').text() || 
                 $(element).find('published').text() || 
@@ -93,22 +144,27 @@ async function initialScraper(url) {
         const articleDate = new Date(date)
         console.log(articleDate)
         const title = $(element).find(formats[format].title).text()
-        if (articleDate < cutoff){console.log(`${title}: Too old, Skipping`);continue}
+        if (articleDate < cutoff){console.log(`${title}: Too old, Skipping`); continue}
         let link = $(element).find('link').text()
         if(!link){link = $(element).find(formats[format].link).attr('href')}
         if (!link){continue}
-        const guid = $(element).find(formats[format].guid).text()
         const articleTextAndTime = await scrapeArticles(link, format)
-        json_["articles"].push({
-            "title": `${title}`,
-            "link": `${link}`,
-            "guid": `${guid}`,
-            "text": `${articleTextAndTime.articleText}`,
-            "time": `${articleDate.toISOString()}`,
+        await dbGUID(guid)
+        await newArticle({
+            websiteName:url,
+            link: link,
+            guid_: guid,
+            title_:title,
+            articleText: articleTextAndTime.articleText,
+            date:articleTextAndTime.publishDate
         })
-    }
+        newCount+=1
+    }}
+    console.log({website_:url,
+                newArticles_: newCount,
+                existingArticles_: existingCount
+    })
     return json_
-
 }
 
 async function scrapeArticles(url, format) {
@@ -143,7 +199,7 @@ async function scrapeArticles(url, format) {
             null;    
         const articleText = $(".entry-content p, .c-entry-content p, article p, .article-body p, .story-content p, .content__body p, #content--body p, .article-content p, main p")
         .map((index, element) => $(element).text())
-        .get()
+       .get()
         .filter(text => text.length > 0)
         .join('\n\n')
         .trim();    
@@ -154,10 +210,7 @@ async function scrapeArticles(url, format) {
 async function linkBuilder(url) {
     const baseUrl = url.origin
 
-    const cached = await dynamo.send(new GetCommand({
-        TableName: 'MyScrapingHandlerTable',
-        Key: { websiteURLs: baseUrl, SK: 'RSS' }
-    }))
+    const cached = await dbGet(baseUrl, SK.RSS)
     if (cached.Item) {
         try {
             const response = await axios.get(cached.Item.rss_url, axiosConfig)
@@ -186,10 +239,7 @@ async function linkBuilder(url) {
             }
         }
         try {
-            await dynamo.send(new PutCommand({
-                TableName: 'MyScrapingHandlerTable',
-                Item: { websiteURLs: baseUrl, SK: 'RSS', rss_url: testURL }
-            }))
+            await dbPut({ websiteURLs: baseUrl, SK: SK.RSS, rss_url: testURL })
         } catch(err) {
             console.log(`DynamoDB PutCommand failed: ${err.message}`)
         }
