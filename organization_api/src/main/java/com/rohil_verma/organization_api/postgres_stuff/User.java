@@ -33,6 +33,8 @@ public class User {
     
     private String contentMode;
 
+    private String keywords;
+
     @OneToMany(mappedBy = "user", cascade = CascadeType.ALL, orphanRemoval = true)
     private List<Subscription> subscriptions = new ArrayList<>();
 
@@ -71,6 +73,10 @@ public class User {
 
     public List<Subscription> getSubscriptions() { return subscriptions; }
     public void setSubscriptions(List<Subscription> subscriptions) { this.subscriptions = subscriptions; }
+
+    public String getKeywords(){return keywords;}
+
+    public void setKeywords(String keywords){this.keywords = keywords;}
 
     @Override
     public String toString() {
