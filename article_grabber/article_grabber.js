@@ -3,12 +3,31 @@ import axios from 'axios'
 import { chromium } from 'playwright-core'
 import chromiumLambda from '@sparticuz/chromium'
 import { DynamoDBClient } from '@aws-sdk/client-dynamodb'
-import { DynamoDBDocumentClient, GetCommand, PutCommand } from '@aws-sdk/lib-dynamodb'
+import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb'
+import { GoogleGenAI } from '@google/genai'
+// import "dotenv/config"
 
 const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}))
-
+const ai = new GoogleGenAI({});
 const TABLE = 'MyScrapingHandlerTable'
 const SK = { RSS: 'RSS' }
+const present = new Date()
+const cutoff = new Date(present.getTime() - (36 * 60 * 60 * 1000))
+const prompts={
+    shorter : "You are a news wire editor. Summarize each article in 2-3 bullet points. Each bullet must be one sentence, maximum 20 words. Bullet 1: What happened — the core event, stated as a fact. Bullet 2: Who is involved and what specifically they did. Bullet 3 (only if needed): A key number or outcome that adds value. Rules: No filler phrases like \"it's worth noting\" or \"according to\"; No background or history unless critical to understanding the event; If a bullet doesn't add new information, cut it; Start each bullet with the subject, not a verb. Return ONLY a valid JSON array.Do not use double quotes inside summary text. Use single quotes instead. Do not wrap in markdown backticks or code blocks, only use objects containing \"title\" and \"summary\".",
+    default : "You are a news briefing editor. For each article, write a single paragraph summary of 4-6 sentences. Each summary must include: 1. The core event — what happened, stated directly; 2. Context — how this connects to related events or industry trends; 3. Implication — what this signals or why it matters going forward; 4. Key specifics — include relevant numbers, names, and concrete details. Write in a flowing paragraph, not bullet points. Do not use filler phrases. State facts directly with no editorializing. Return ONLY a valid JSON array.Do not use double quotes inside summary text. Use single quotes instead. Do not wrap in markdown backticks or code blocks, only use objects containing \"title\" and \"summary\".",
+    longer: "You are a senior analyst writing intelligence briefings. For each article, write a detailed analysis following this exact structure:\n\n[PARAGRAPH 1 - THE EVENT]\nWhat happened, who was involved, and the concrete specifics. Include all relevant numbers, names, dates, and technical details found in the article. Leave nothing important out. End this paragraph, then start a new one.\n\n[PARAGRAPH 2 - THE CONTEXT] (only if the article provides it)\nUsing ONLY information found within the article, explain how this event connects to related developments, competing efforts, or previous events that the article mentions. Do not reference any information outside of the provided text. If the article does not provide broader context, skip this paragraph entirely.\n\n[PARAGRAPH 3 - THE IMPLICATIONS] (only if the article supports it)\nBased ONLY on what the article states or directly implies, what does this signal going forward? Do not speculate beyond what the text supports. If the article does not discuss implications, skip this paragraph entirely.\n\nRules:\n- Each paragraph MUST be separated by a blank line\n- Never combine multiple sections into one paragraph\n- Include specific numbers, names, and data points\n- Draw connections ONLY between details within the article\n- No filler phrases or editorializing\n- Never introduce outside knowledge\n- Every sentence must be traceable to the article text\n\nReturn ONLY a valid JSON array.Do not use double quotes inside summary text. Use single quotes instead. Do not wrap in markdown backticks or code blocks, only use objects containing \"title\" and \"summary\"."
+}
+const paywallIndicators = [
+    '.paywall',
+    '.subscription-required',
+    '.meter-limit',
+    '#paywall',
+    '.premium-content',
+    '.locked-content',
+    '[data-paywall]'
+];
+
 
 async function dbGet(pk, sk) {
     return dynamo.send(new GetCommand({ TableName: TABLE, Key: { websiteURLs: pk, SK: sk } }))
@@ -38,6 +57,7 @@ async function guidChecker(guid){
 
 async function newArticle(item){
     const week = Math.floor(Date.now() / 1000) + (7 * 24 * 60 * 60);
+
     return dynamo.send(new PutCommand({
         TableName: TABLE,
         Item: {
@@ -47,8 +67,21 @@ async function newArticle(item){
             summary: "",
             articleText: item.articleText,
             date: item.date,
-            ttl: week
+            ttl: week,
+            paywall: item.paywall
         }
+    }))
+}
+
+async function updateSummary(item, summary){
+    return dynamo.send(new UpdateCommand({
+        TableName: TABLE,
+        Key: {
+        websiteURLs: item.websiteName,
+        SK: item.link
+        },
+        UpdateExpression: 'SET summary = :summary', 
+        ExpressionAttributeValues: {':summary': summary}
     }))
 }
 
@@ -101,9 +134,6 @@ export const handler = async(event, useContext) => {
     console.log(JSON.stringify(jSON, null, 2))
 }
 
-const present = new Date()
-const cutoff = new Date(present.getTime() - (36 * 60 * 60 * 1000))
-
 async function initialScraper(url) {
     const cleanURL = new URL(url)
     const data = await linkBuilder(cleanURL)
@@ -125,6 +155,7 @@ async function initialScraper(url) {
     }
     let existingCount=0
     let newCount=0
+    let articleList=[]
     for (const element of items) {
         const guid = $(element).find(formats[format].guid).text()
         const exists = await guidChecker(guid)
@@ -148,24 +179,58 @@ async function initialScraper(url) {
         let link = $(element).find('link').text()
         if(!link){link = $(element).find(formats[format].link).attr('href')}
         if (!link){continue}
-        const articleTextAndTime = await scrapeArticles(link, format)
-        await dbGUID(guid)
-        await newArticle({
+        const articleTextAndTime = await scrapeArticles(link)
+        const articleContent = {
             websiteName:url,
             link: link,
             guid_: guid,
             title_:title,
             articleText: articleTextAndTime.articleText,
-            date:articleTextAndTime.publishDate
-        })
+            date:articleTextAndTime.publishDate,
+            paywall: articleTextAndTime.paywallStatus   
+        }
+        await dbGUID(guid)
+        await newArticle(articleContent)
         newCount+=1
-    }}
+        if (!articleContent.paywall) { articleList.push(articleContent) }
+    }
+    for (let i = 0 ; i < articleList.length; i += 5){ 
+        const chunk = articleList.slice(i, i + 5)
+        const prompt = chunk.map((x, indx) => `Article ${indx + 1}: ${x.title_}\n${x.articleText}`).join('\n\n')
+        const x = await ai.models.generateContent({
+            model:"gemini-2.5-flash-lite",
+            config: {systemInstruction: prompts.default,
+                responseMimeType:"application/json",
+                responseSchema: {
+                type: 'array',
+                items: {
+                    type: 'object',
+                    properties: {
+                        title: { type: 'string' },
+                        summary: { type: 'string' }
+                    },
+                    required: ['title', 'summary']
+                }}
+            },
+            contents:prompt,
+        })
+        console.log("Gemini raw response:", x.text)
+        const cleaned = x.text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim()
+        const summarization = JSON.parse(cleaned)
+
+        for (let i = 0; i < chunk.length; i ++) {
+            if (summarization[i]){
+                const updateResult = await updateSummary(chunk[i], summarization[i].summary)
+                console.log("Update Result", updateResult)
+            }
+        }
+        
+    }
     console.log({website_:url,
                 newArticles_: newCount,
                 existingArticles_: existingCount
     })
-    return json_
-}
+}}
 
 async function scrapeArticles(url, format) {
     const sourceURL = new URL(url)
@@ -182,6 +247,12 @@ async function scrapeArticles(url, format) {
         }
         if (!data){return {articleText: "couldn't be scraped", publishDate: "couldn't be found"}}
         const $ = cheerio.load(data)
+        let paywallStatus=false
+        const paywall = paywallIndicators.some(selector => $(selector).length>0)
+        if(paywall){
+            console.log("Paywall Detected!")
+            return {articleText: null, publishDate: null, paywallStatus: true}
+        }
         $(
         '.c-entry-sidebar, ' +      
         '.c-byline, ' +             
@@ -204,7 +275,7 @@ async function scrapeArticles(url, format) {
         .join('\n\n')
         .trim();    
         
-        return {articleText, publishDate}
+        return {articleText, publishDate, paywallStatus}
     }
 
 async function linkBuilder(url) {
@@ -292,3 +363,6 @@ async function javascriptHTMLScraper(url){
         await browser.close()
     }
 }
+
+
+// initialScraper("https://theverge.com")
