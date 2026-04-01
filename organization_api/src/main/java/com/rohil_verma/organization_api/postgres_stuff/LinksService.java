@@ -22,6 +22,7 @@ public class LinksService {
     @Autowired
     private MessageSender messageSender;
 
+
     public List<String> getWebsitesForUser(String username) {
         return userRepository.findByUsername(username)
             .map(user -> user.getSubscriptions().stream()

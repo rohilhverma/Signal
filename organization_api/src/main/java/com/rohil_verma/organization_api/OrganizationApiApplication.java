@@ -19,42 +19,43 @@ public class OrganizationApiApplication {
 
 	@Bean
 	CommandLineRunner commandLineRunner(UserRepository userRepository, LinksService linksService) {
-		return args -> {
-			if (userRepository.count() == 0) {
-				// rohil: "short" across all sites, techcrunch overridden to "analytics"
-				User rohil = new User("rohil", "rohil@gmail.com");
-				rohil.setContentMode("short");
-				rohil.addSubscription("https://theverge.com", null);
-				rohil.addSubscription("https://arstechnica.com", null);
-				rohil.addSubscription("https://techcrunch.com", "analytics");
-				userRepository.save(rohil);
+		// return args -> {
+		// 	if (userRepository.count() == 0) {
+		// 		// rohil: "short" across all sites, techcrunch overridden to "analytics"
+		// 		User rohil = new User("rohil", "rohil@gmail.com");
+		// 		rohil.setContentMode("short");
+		// 		rohil.addSubscription("https://theverge.com", null);
+		// 		rohil.addSubscription("https://arstechnica.com", null);
+		// 		rohil.addSubscription("https://techcrunch.com", "analytics");
+		// 		userRepository.save(rohil);
 
-				// sarah: no default, each site has its own mode
-				User sarah = new User("sarah_k", "sarah@outlook.com");
-				sarah.addSubscription("https://nytimes.com", "long");
-				sarah.addSubscription("https://bbc.com", "short");
-				userRepository.save(sarah);
+		// 		// sarah: no default, each site has its own mode
+		// 		User sarah = new User("sarah_k", "sarah@outlook.com");
+		// 		sarah.addSubscription("https://nytimes.com", "long");
+		// 		sarah.addSubscription("https://bbc.com", "short");
+		// 		userRepository.save(sarah);
 
-				// mike: "default" across all, one override
-				User mike = new User("dev_mike", "mike@proton.me");
-				mike.setContentMode("default");
-				mike.addSubscription("https://github.blog", "analytics");
-				mike.addSubscription("https://stackoverflow.blog", null);
-				mike.addSubscription("https://hackernews.com", null);
-				userRepository.save(mike);
+		// 		// mike: "default" across all, one override
+		// 		User mike = new User("dev_mike", "mike@proton.me");
+		// 		mike.setContentMode("default");
+		// 		mike.addSubscription("https://github.blog", "analytics");
+		// 		mike.addSubscription("https://stackoverflow.blog", null);
+		// 		mike.addSubscription("https://hackernews.com", null);
+		// 		userRepository.save(mike);
 
-				// jenny: "long" across all
-				User jenny = new User("jenny_w", "jenny@yahoo.com");
-				jenny.setContentMode("long");
-				jenny.addSubscription("https://medium.com", null);
-				userRepository.save(jenny);
+		// 		// jenny: "long" across all
+		// 		User jenny = new User("jenny_w", "jenny@yahoo.com");
+		// 		jenny.setContentMode("long");
+		// 		jenny.addSubscription("https://medium.com", null);
+		// 		userRepository.save(jenny);
 
-				System.out.println("--- Data Seeded Successfully ---");
-			} else {
-				System.out.println("--- Data already exists ---");
-				ResponseEntity<String> x = linksService.sendScrapingTask("rohil");
-				System.out.println(x.getStatusCode());
-			};
+		// 		System.out.println("--- Data Seeded Successfully ---");
+		// 	} else {
+		// 		System.out.println("--- Data already exists ---");
+		// 		ResponseEntity<String> x = linksService.sendScrapingTask("rohil");
+		// 		System.out.println(x.getStatusCode());
+		// 	};
+		return args -> {};
 		};
 	}
-}
+

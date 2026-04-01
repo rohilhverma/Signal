@@ -1,11 +1,13 @@
 package com.rohil_verma.organization_api.postgres_stuff;
 
 import java.util.List;
+import java.util.Map;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -14,10 +16,15 @@ import org.springframework.web.bind.annotation.RequestBody;
 
 @RestController
 @RequestMapping("/")
+@CrossOrigin(origins = "http://localhost:3000")
 public class LinksController {
 
     @Autowired
+    private DynamoService dynamoService;
+
+    @Autowired
     private LinksService linksService;
+
 
     @GetMapping("/links/user")
     public List<String> WebsitesForUser(@RequestParam String username) {
@@ -54,4 +61,12 @@ public class LinksController {
     public ResponseEntity<String> SendScrapingTask(@RequestBody UserRequest request) {
         return linksService.sendScrapingTask(request.getUsername());
     }
+
+    @GetMapping("/user/website")
+    public Map<String, List<Map<String, Map<String, String>>>> returnUserContent(@RequestParam String username) {
+        return dynamoService.getUserContent(username);
+    }
+
+    
+    
 }

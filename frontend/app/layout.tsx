@@ -3,6 +3,14 @@ import { Inter, JetBrains_Mono } from 'next/font/google'
 import { Analytics } from '@vercel/analytics/next'
 import './globals.css'
 
+
+/*
+Root Layout File. Everything loaded in this file loads into branches. Contains 
+title, website language settings, and fonts. All other react children load in here, 
+all under SignalApp. 
+*/
+
+
 const inter = Inter({
   subsets: ['latin'],
   variable: '--font-inter',
@@ -35,7 +43,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={`${inter.variable} ${jetbrainsMono.variable} antialiased`}>
-        {children}
+        {children} 
         <Analytics />
       </body>
     </html>

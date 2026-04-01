@@ -16,14 +16,14 @@ import {
   Loader2,
 } from "lucide-react";
 import {
-  MOCK_SOURCES,
-  MOCK_ARTICLES,
   type Source,
   type Article,
   type SummaryMode,
   DEFAULT_ACCENT,
 } from "../data/mockArticles";
 import { usePreferences } from "../context/PreferencesContext";
+import { useAppState } from "../context/AppStateContext";
+import { useToast } from "../context/ToastContext";
 
 // ─── Utilities ──────────────────────────────────────────────────────────────
 
@@ -460,18 +460,6 @@ function ArticleCard({
           </div>
         </div>
 
-        {/* Summary mode toggle (only when expanded) */}
-        {expanded && (
-          <div style={{ paddingLeft: 36, marginTop: 10 }}>
-            <SummaryModeToggle
-              activeMode={summaryMode}
-              onSelect={onSummaryModeChange}
-              accentColor={accent}
-              loadingModes={loadingModes}
-            />
-          </div>
-        )}
-
         {/* Expanded summary */}
         <div
           style={{
@@ -584,6 +572,16 @@ function ArticleCard({
             <ExternalLink style={{ width: 10, height: 10 }} />
             Read original
           </a>
+          {expanded && (
+            <div style={{ marginLeft: "auto" }}>
+              <SummaryModeToggle
+                activeMode={summaryMode}
+                onSelect={onSummaryModeChange}
+                accentColor={accent}
+                loadingModes={loadingModes}
+              />
+            </div>
+          )}
         </div>
       </div>
     </article>
@@ -1014,6 +1012,8 @@ type ArticleSummaryCache = Map<string, Partial<Record<SummaryMode, string>>>;
 export function DashboardPage() {
   const navigate = useNavigate();
   const { density, viewMode } = usePreferences();
+  const { state: appState, toggleBookmark: ctxToggleBookmark, isBookmarked } = useAppState();
+  const { showToast } = useToast();
 
   const [loading, setLoading] = useState(true);
   const [articles, setArticles] = useState<Article[]>([]);
@@ -1025,7 +1025,6 @@ export function DashboardPage() {
 
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [allExpanded, setAllExpanded] = useState(false);
-  const [bookmarkedIds, setBookmarkedIds] = useState<Set<string>>(new Set());
 
   // Per-article active summary mode
   const [summaryModes, setSummaryModes] = useState<Map<string, SummaryMode>>(new Map());
@@ -1042,37 +1041,66 @@ export function DashboardPage() {
     async function load() {
       setLoading(true);
       try {
-        const [r1, r2] = await Promise.allSettled([
-          fetch("/articles").then((r) => r.json()),
-          fetch("/user/info").then((r) => r.json()),
-        ]);
-        void r1; void r2;
-        throw new Error("using mock");
-      } catch {
-        await new Promise((res) => setTimeout(res, 1500));
+        const response = await fetch("/api/user/website?username=rohil").then((r) => r.json()) as Record<
+          string,
+          Array<Record<string, { date: string; link: string; summary: string }>>
+        >;
+
         if (cancelled) return;
-        setSources(MOCK_SOURCES);
-        setArticles(MOCK_ARTICLES);
+
+        const derivedSources: Source[] = Object.keys(response).map((sourceUrl) => {
+          const hostname = new URL(sourceUrl).hostname.replace(/^www\./, "");
+          return {
+            id: sourceUrl,
+            name: hostname.split(".")[0].replace(/^\w/, (c) => c.toUpperCase()),
+            domain: hostname,
+            faviconUrl: `https://www.google.com/s2/favicons?sz=64&domain=${hostname}`,
+            accentColor: DEFAULT_ACCENT,
+          };
+        });
+
+        const derivedArticles: Article[] = Object.entries(response).flatMap(
+          ([sourceUrl, articleList]) =>
+            articleList.flatMap((articleEntry) =>
+              Object.entries(articleEntry).map(([title, fields]) => ({
+                id: fields.link,
+                sourceId: sourceUrl,
+                title,
+                url: fields.link,
+                summaryDefault: fields.summary ?? "",
+                summaryShort: null,
+                summaryDeepDive: null,
+                publishedAt: new Date(fields.date),
+                originalWordCount: 0,
+                summaryWordCount: fields.summary?.split(/\s+/).length ?? 0,
+              }))
+            )
+        );
+
+        setSources(derivedSources);
+        setArticles(derivedArticles);
 
         const lastVisit = lastVisitRef.current;
-        const newIds = new Set(MOCK_ARTICLES.filter((a) => a.publishedAt > lastVisit).map((a) => a.id));
+        const newIds = new Set(derivedArticles.filter((a) => a.publishedAt > lastVisit).map((a) => a.id));
         setNewSinceLastVisit(newIds);
 
         const visibleIds = new Set(
-          MOCK_ARTICLES.filter((a) => (Date.now() - a.publishedAt.getTime()) / (1000 * 60 * 60) < 24).map((a) => a.id)
+          derivedArticles.filter((a) => (Date.now() - a.publishedAt.getTime()) / (1000 * 60 * 60) < 24).map((a) => a.id)
         );
         const previouslySeen = new Set([...visibleIds].filter((id) => !newIds.has(id)));
         setSeenIds(previouslySeen);
 
-        // Pre-populate summary cache with existing summaryDefault
         const cache: ArticleSummaryCache = new Map();
-        for (const a of MOCK_ARTICLES) {
+        for (const a of derivedArticles) {
           cache.set(a.id, { default: a.summaryDefault });
         }
         setSummaryCache(cache);
 
         setLoading(false);
         lastVisitRef.current = new Date();
+      } catch (err) {
+        console.error("Failed to load articles:", err);
+        if (!cancelled) setLoading(false);
       }
     }
     load();
@@ -1112,7 +1140,7 @@ export function DashboardPage() {
         // Simulate 2s delay + mock response
         await new Promise((res) => setTimeout(res, 2000));
 
-        const article = MOCK_ARTICLES.find((a) => a.id === articleId);
+        const article = articles.find((a: Article) => a.id === articleId);
         let generatedText = "";
         if (mode === "short") {
           generatedText = [
@@ -1194,11 +1222,14 @@ export function DashboardPage() {
   }
 
   function toggleBookmark(id: string) {
-    setBookmarkedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
-      return next;
-    });
+    const article = articles.find((a) => a.id === id);
+    const source = sources.find((s) => s.id === article?.sourceId);
+    if (!article || !source) return;
+    const mode = summaryModes.get(id) ?? "default";
+    ctxToggleBookmark(article, source, mode);
+    if (!isBookmarked(id)) {
+      showToast("Article saved", "success");
+    }
   }
 
   function handleExpandAll() {
@@ -1213,6 +1244,12 @@ export function DashboardPage() {
 
   const isCompact = density === "compact";
   const outerPadding = isCompact ? "18px 16px" : "28px 24px";
+
+  // Derive bookmarkedIds Set from global context so Dashboard and Saved stay in sync
+  const bookmarkedIds = useMemo(
+    () => new Set(appState.bookmarks.map((b) => b.article.id)),
+    [appState.bookmarks]
+  );
 
   const [today, setToday] = useState("");
   useEffect(() => {

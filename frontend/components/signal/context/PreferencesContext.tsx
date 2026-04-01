@@ -7,6 +7,10 @@ export type FontFamily = "sans" | "serif" | "mono";
 export type Density = "comfortable" | "compact";
 export type ViewMode = "feed" | "reader";
 
+/* A purely UI file
+References by Toolbar, AppLayout, SettingsPage,etc.
+*/
+
 export interface Preferences {
   theme: Theme;
   fontFamily: FontFamily;

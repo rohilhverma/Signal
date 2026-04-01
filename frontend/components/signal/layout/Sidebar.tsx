@@ -21,12 +21,22 @@ interface NavItem {
   badgeKey?: "bookmarks";
 }
 
+const NAV_ITEMS: NavItem[] = [
+  { to: "/", icon: LayoutDashboard, label: "Dashboard", end: true },
+  { to: "/saved", icon: Bookmark, label: "Saved", badgeKey: "bookmarks" },
+  { to: "/sources", icon: Globe, label: "Sources" },
+  { to: "/settings", icon: Settings, label: "Settings" },
+];
+
 interface SidebarProps {
   open: boolean;
   onClose: () => void;
 }
 
 export function Sidebar({ open, onClose }: SidebarProps) {
+  const { state } = useAppState();
+  const bookmarkCount = state.bookmarks.length;
+
   // Compute year client-side only to avoid SSR/client hydration mismatch
   const [year, setYear] = useState<number | null>(null);
   useEffect(() => {
@@ -134,7 +144,24 @@ export function Sidebar({ open, onClose }: SidebarProps) {
                           color: isActive ? "var(--sg-text)" : "var(--sg-muted)",
                         }}
                       />
-                      <span>{item.label}</span>
+                      <span style={{ flex: 1 }}>{item.label}</span>
+                      {item.badgeKey === "bookmarks" && bookmarkCount > 0 && (
+                        <span
+                          style={{
+                            fontSize: 10,
+                            fontWeight: 700,
+                            lineHeight: 1,
+                            padding: "2px 6px",
+                            borderRadius: 10,
+                            backgroundColor: isActive ? "var(--sg-text)" : "var(--sg-surface-hover)",
+                            color: isActive ? "var(--sg-bg)" : "var(--sg-muted)",
+                            border: "1px solid var(--sg-border)",
+                            flexShrink: 0,
+                          }}
+                        >
+                          {bookmarkCount}
+                        </span>
+                      )}
                     </>
                   )}
                 </NavLink>

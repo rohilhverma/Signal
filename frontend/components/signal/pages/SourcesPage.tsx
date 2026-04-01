@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { Plus, Trash2, Globe, Newspaper, ChevronDown } from "lucide-react";
 import { useAppState, type ContentProfile } from "../context/AppStateContext";
 import { useToast } from "../context/ToastContext";
@@ -52,18 +52,36 @@ function ProfileDropdown({
   onChange: (v: ContentProfile) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
+  const [dropdownPos, setDropdownPos] = useState({ top: 0, right: 0 });
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const current = PROFILE_OPTIONS.find((o) => o.key === value)!;
 
   // Close on outside click
-  const handleBlur = (e: React.FocusEvent<HTMLDivElement>) => {
-    if (!ref.current?.contains(e.relatedTarget as Node)) setOpen(false);
+  useEffect(() => {
+    if (!open) return;
+    const handle = (e: MouseEvent) => {
+      if (!triggerRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handle);
+    return () => document.removeEventListener("mousedown", handle);
+  }, [open]);
+
+  const handleToggle = () => {
+    if (!open && triggerRef.current) {
+      const rect = triggerRef.current.getBoundingClientRect();
+      setDropdownPos({
+        top: rect.bottom + 4,
+        right: window.innerWidth - rect.right,
+      });
+    }
+    setOpen((v) => !v);
   };
 
   return (
-    <div ref={ref} style={{ position: "relative" }} onBlur={handleBlur}>
+    <div style={{ position: "relative" }}>
       <button
-        onClick={() => setOpen((v) => !v)}
+        ref={triggerRef}
+        onClick={handleToggle}
         aria-haspopup="listbox"
         aria-expanded={open}
         style={{
@@ -92,10 +110,10 @@ function ProfileDropdown({
         <div
           role="listbox"
           style={{
-            position: "absolute",
-            top: "calc(100% + 4px)",
-            right: 0,
-            zIndex: 50,
+            position: "fixed",
+            top: dropdownPos.top,
+            right: dropdownPos.right,
+            zIndex: 9999,
             minWidth: 160,
             backgroundColor: "var(--sg-surface)",
             border: "1px solid var(--sg-border)",

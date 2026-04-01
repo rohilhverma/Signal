@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Routes, Route } from "react-router-dom";
 import { usePreferences } from "../context/PreferencesContext";
 import { Sidebar } from "./Sidebar";
@@ -21,6 +21,11 @@ export function AppLayout() {
   const { theme, fontFamily, fontSize } = usePreferences();
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
+  // Sync theme to <html> so Radix portals (rendered in document.body) can access --sg-* CSS vars
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+  }, [theme]);
+
   return (
     <div
       className="signal-app"
@@ -30,7 +35,6 @@ export function AppLayout() {
         display: "flex",
         backgroundColor: "var(--sg-bg)",
         color: "var(--sg-text)",
-        transition: "background-color 0.2s ease, color 0.2s ease",
       }}
     >
       {/* Mobile sidebar backdrop */}
