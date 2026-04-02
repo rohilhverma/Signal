@@ -6,7 +6,6 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.context.annotation.Bean;
 import org.springframework.http.ResponseEntity;
 
-import com.rohil_verma.organization_api.postgres_stuff.User;
 import com.rohil_verma.organization_api.postgres_stuff.UserRepository;
 import com.rohil_verma.organization_api.postgres_stuff.LinksService;
 
@@ -51,9 +50,9 @@ public class OrganizationApiApplication {
 
 		// 		System.out.println("--- Data Seeded Successfully ---");
 		// 	} else {
-		// 		System.out.println("--- Data already exists ---");
-		// 		ResponseEntity<String> x = linksService.sendScrapingTask("rohil");
-		// 		System.out.println(x.getStatusCode());
+				System.out.println("--- Data already exists ---");
+				// ResponseEntity<String> x = linksService.sendScrapingTask("rohil");
+				// System.out.println(x.getStatusCode());
 		// 	};
 		return args -> {};
 		};

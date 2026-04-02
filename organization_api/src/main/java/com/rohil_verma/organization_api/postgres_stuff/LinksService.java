@@ -1,7 +1,6 @@
 package com.rohil_verma.organization_api.postgres_stuff;
 
 import java.util.List;
-
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
@@ -37,6 +36,14 @@ public class LinksService {
             .distinct()
             .toList();
     }
+
+    public ResponseEntity<String> addWebsiteForUser(String username,  String websiteURL,String contentMode){
+        try {
+            User currentUser = userRepository.findByUsername(username).orElseThrow();
+            currentUser.addSubscription(websiteURL,contentMode);
+            userRepository.save(currentUser);
+            return ResponseEntity.ok("New Source " + websiteURL + " added to user: " + username);
+    } catch (Exception e){return ResponseEntity.status(500).body("Failed to Upload Source");}}
 
     public UserInformationDTO getUserInformation(String username) {
         return userRepository.findByUsername(username)
@@ -89,6 +96,8 @@ public class LinksService {
             return ResponseEntity.status(500).body("Failed to Save User");
         }
     }
+
+
 
     public ResponseEntity<String> sendScrapingTask(String username) {
         try {

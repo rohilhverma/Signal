@@ -48,12 +48,14 @@ public class LinksController {
     }
 
     @DeleteMapping("/user")
-    public ResponseEntity<String> DeleteUser(@RequestBody UserRequest request) {
-        return linksService.deleteUser(request.getUsername());
+    public ResponseEntity<String> DeleteUser(@RequestParam String username) {
+        return linksService.deleteUser(username);
     }
 
     @DeleteMapping("/user/url")
     public void deleteWebsiteForUser(@RequestBody UserRequest request) {
+        System.out.println("username: " + request.getUsername() + " url: " + request.getWebsiteURL());
+
         linksService.deleteWebsiteForUser(request.getUsername(), request.getWebsiteURL());
     }
 
@@ -63,10 +65,17 @@ public class LinksController {
     }
 
     @GetMapping("/user/website")
-    public Map<String, List<Map<String, Map<String, String>>>> returnUserContent(@RequestParam String username) {
+    public Map<String, WebsiteContent> returnUserContent(@RequestParam String username) {
         return dynamoService.getUserContent(username);
     }
 
+    @PostMapping("/user/website")
+    public ResponseEntity<String> addWebsiteForUser(@RequestBody UserRequest request) {
+        ResponseEntity<String> response= linksService.addWebsiteForUser(request.getUsername(), request.getWebsiteURL(), request.getWebsiteContentMode());
+        System.out.println(response + "\n\n" + request.getUsername() + "\n" + request.getWebsiteURL() + "\n" + request.getContentMode());
+        return response;
+    }
     
-    
+
+
 }

@@ -8,8 +8,6 @@ import {
   useCallback,
 } from "react";
 import {
-  MOCK_SOURCES,
-  MOCK_ARTICLES,
   type Source,
   type Article,
   type SummaryMode,
@@ -55,7 +53,7 @@ function appReducer(state: AppState, action: AppAction): AppState {
       if (already) return state;
       const newSource: ManagedSource = {
         ...action.payload,
-        contentProfile: "standard",
+        contentProfile: (action.payload as ManagedSource).contentProfile ?? "standard",
         articleCount: 0,
       };
       return { ...state, sources: [...state.sources, newSource] };
@@ -124,19 +122,10 @@ function appReducer(state: AppState, action: AppAction): AppState {
 
 // ─── Initial state ────────────────────────────────────────────────────────────
 
-const articleCountMap: Record<string, number> = {};
-MOCK_ARTICLES.forEach((a) => {
-  articleCountMap[a.sourceId] = (articleCountMap[a.sourceId] ?? 0) + 1;
-});
-
 const initialState: AppState = {
-  sources: MOCK_SOURCES.map((s) => ({
-    ...s,
-    contentProfile: "standard" as ContentProfile,
-    articleCount: articleCountMap[s.id] ?? 0,
-  })),
+  sources: [],
   bookmarks: [],
-  articles: MOCK_ARTICLES,
+  articles: [],
 };
 
 // ─── Context ─────────────────────────────────────────────────────────────────

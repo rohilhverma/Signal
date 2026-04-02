@@ -18,14 +18,52 @@ const prompts={
     default : "You are a news briefing editor. For each article, write a single paragraph summary of 4-6 sentences. Each summary must include: 1. The core event — what happened, stated directly; 2. Context — how this connects to related events or industry trends; 3. Implication — what this signals or why it matters going forward; 4. Key specifics — include relevant numbers, names, and concrete details. Write in a flowing paragraph, not bullet points. Do not use filler phrases. State facts directly with no editorializing. Return ONLY a valid JSON array.Do not use double quotes inside summary text. Use single quotes instead. Do not wrap in markdown backticks or code blocks, only use objects containing \"title\" and \"summary\".",
     longer: "You are a senior analyst writing intelligence briefings. For each article, write a detailed analysis following this exact structure:\n\n[PARAGRAPH 1 - THE EVENT]\nWhat happened, who was involved, and the concrete specifics. Include all relevant numbers, names, dates, and technical details found in the article. Leave nothing important out. End this paragraph, then start a new one.\n\n[PARAGRAPH 2 - THE CONTEXT] (only if the article provides it)\nUsing ONLY information found within the article, explain how this event connects to related developments, competing efforts, or previous events that the article mentions. Do not reference any information outside of the provided text. If the article does not provide broader context, skip this paragraph entirely.\n\n[PARAGRAPH 3 - THE IMPLICATIONS] (only if the article supports it)\nBased ONLY on what the article states or directly implies, what does this signal going forward? Do not speculate beyond what the text supports. If the article does not discuss implications, skip this paragraph entirely.\n\nRules:\n- Each paragraph MUST be separated by a blank line\n- Never combine multiple sections into one paragraph\n- Include specific numbers, names, and data points\n- Draw connections ONLY between details within the article\n- No filler phrases or editorializing\n- Never introduce outside knowledge\n- Every sentence must be traceable to the article text\n\nReturn ONLY a valid JSON array.Do not use double quotes inside summary text. Use single quotes instead. Do not wrap in markdown backticks or code blocks, only use objects containing \"title\" and \"summary\"."
 }
+const nonTechPatterns = [
+    /\bbest deals?\b/i,
+    /\bdeals? to shop\b/i,
+    /\bdeal\b/i,
+    /\bbig spring sale\b/i,
+    /\bprime day\b/i,
+    /\bblack friday\b/i,
+    /\bcyber monday\b/i,
+    /\bgift guide\b/i,
+    /\bgift ideas?\b/i,
+    /\bshopping guide\b/i,
+    /\bdiscount(s|ed)?\b/i,
+    /\bcoupon\b/i,
+    /\bpromo code\b/i,
+    /\bprice drop\b/i,
+    /\bprice cut\b/i,
+    /\bhow to save\b/i,
+    /\bbest .{0,40} to buy\b/i,
+    /\bunder \$\d+\b/i,
+    /\bon sale\b/i,
+    /\blast chance\b/i,
+    /\blimited time\b/i,
+]
+
 const paywallIndicators = [
     '.paywall',
+    '#paywall',
     '.subscription-required',
     '.meter-limit',
-    '#paywall',
-    '.premium-content',
     '.locked-content',
-    '[data-paywall]'
+    '[data-paywall]',
+    '.regwall',
+    '#regwall',
+];
+
+const paywallPhrases = [
+    /subscribe to continue reading/i,
+    /subscribe to read (the full|this)/i,
+    /this (article|story|content) is (for|available to) (subscribers|members)/i,
+    /you('ve| have) reached your (free )?(article|story) limit/i,
+    /get unlimited access/i,
+    /create a free account to continue/i,
+    /sign in to continue reading/i,
+    /already a subscriber\? sign in/i,
+    /member-only (content|article|story)/i,
+    /exclusive(ly)? for (subscribers|members)/i,
 ];
 
 
@@ -70,6 +108,15 @@ async function newArticle(item){
             ttl: week,
             paywall: item.paywall
         }
+    }))
+}
+
+async function flagRSSPaywall(baseUrl){
+    return dynamo.send(new UpdateCommand({
+        TableName: TABLE,
+        Key: { websiteURLs: baseUrl, SK: SK.RSS },
+        UpdateExpression: 'SET paywall = :p',
+        ExpressionAttributeValues: { ':p': true }
     }))
 }
 
@@ -155,14 +202,16 @@ async function initialScraper(url) {
     }
     let existingCount=0
     let newCount=0
+    let paywallCount=0
     let articleList=[]
     for (const element of items) {
         const guid = $(element).find(formats[format].guid).text()
         const exists = await guidChecker(guid)
         if (exists.Item){
             existingCount+=1
+            console.log(`GUID exists, skipping: ${guid}`)
             continue
-        } else {
+        }
         let date = $(element).find(formats[format].date).text()
         if (!date) {date = $(element).find('pubDate').text() || 
                 $(element).find('published').text() || 
@@ -176,10 +225,25 @@ async function initialScraper(url) {
         console.log(articleDate)
         const title = $(element).find(formats[format].title).text()
         if (articleDate < cutoff){console.log(`${title}: Too old, Skipping`); continue}
+        if (nonTechPatterns.some(p => p.test(title))){console.log(`${title}: Non-tech, Skipping`); continue}
         let link = $(element).find('link').text()
         if(!link){link = $(element).find(formats[format].link).attr('href')}
         if (!link){continue}
+        let parsedLink
+        try { parsedLink = new URL(link) } catch { console.log(`Invalid URL, skipping: ${link}`); continue }
+        if (parsedLink.protocol !== 'http:' && parsedLink.protocol !== 'https:') { console.log(`Non-http URL, skipping: ${link}`); continue }
+        if (/^\/(gallery|review|reviews|guide|collection|buying-guide|roundup)\//i.test(parsedLink.pathname)) { console.log(`Product guide URL, skipping: ${link}`); continue }
         const articleTextAndTime = await scrapeArticles(link)
+        if (articleTextAndTime.paywallStatus) {
+            console.log(`Paywall article, GUID saved but skipping DB write: ${link}`)
+            await dbGUID(guid)
+            paywallCount+=1
+            continue
+        }
+        if (!articleTextAndTime.articleText || articleTextAndTime.articleText.trim().length < 100) {
+            console.log(`Empty or too-short article text, skipping entirely: ${link}`)
+            continue
+        }
         const articleContent = {
             websiteName:url,
             link: link,
@@ -187,50 +251,89 @@ async function initialScraper(url) {
             title_:title,
             articleText: articleTextAndTime.articleText,
             date:articleTextAndTime.publishDate,
-            paywall: articleTextAndTime.paywallStatus   
+            paywall: false
         }
         await dbGUID(guid)
         await newArticle(articleContent)
         newCount+=1
-        if (!articleContent.paywall) { articleList.push(articleContent) }
+        console.log(articleContent)
+        articleList.push(articleContent)
     }
-    for (let i = 0 ; i < articleList.length; i += 5){ 
+    const totalProcessed = newCount + paywallCount
+    console.log(`Paywall: ${paywallCount}/${totalProcessed} articles`)
+    if (totalProcessed > 0 && paywallCount / totalProcessed >= 0.7) {
+        console.log(`70%+ paywall rate detected for ${url}, flagging RSS row`)
+        const baseUrl = new URL(url).origin
+        await flagRSSPaywall(baseUrl)
+    }
+    for (let i = 0 ; i < articleList.length; i += 5){
         const chunk = articleList.slice(i, i + 5)
-        const prompt = chunk.map((x, indx) => `Article ${indx + 1}: ${x.title_}\n${x.articleText}`).join('\n\n')
-        const x = await ai.models.generateContent({
-            model:"gemini-2.5-flash-lite",
-            config: {systemInstruction: prompts.default,
-                responseMimeType:"application/json",
-                responseSchema: {
-                type: 'array',
-                items: {
-                    type: 'object',
-                    properties: {
-                        title: { type: 'string' },
-                        summary: { type: 'string' }
-                    },
-                    required: ['title', 'summary']
-                }}
-            },
-            contents:prompt,
-        })
-        console.log("Gemini raw response:", x.text)
-        const cleaned = x.text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim()
-        const summarization = JSON.parse(cleaned)
+        const chunkIndex = Math.floor(i / 5) + 1
+        console.log(`\n--- CHUNK ${chunkIndex}: Sending ${chunk.length} articles to Gemini ---`)
+        chunk.forEach((a, idx) => console.log(`  [${idx}] ${a.title_}`))
 
-        for (let i = 0; i < chunk.length; i ++) {
-            if (summarization[i]){
-                const updateResult = await updateSummary(chunk[i], summarization[i].summary)
-                console.log("Update Result", updateResult)
+        const prompt = chunk.map((x, indx) => `Article ${indx + 1}: ${x.title_}\n${x.articleText}`).join('\n\n')
+
+        let summarization = null
+        try {
+            const geminiStart = Date.now()
+            const x = await ai.models.generateContent({
+                model:"gemini-2.5-flash-lite",
+                config: {systemInstruction: prompts.default,
+                    responseMimeType:"application/json",
+                    responseSchema: {
+                    type: 'array',
+                    items: {
+                        type: 'object',
+                        properties: {
+                            title: { type: 'string' },
+                            summary: { type: 'string' }
+                        },
+                        required: ['title', 'summary']
+                    }}
+                },
+                contents:prompt,
+            })
+            const geminiMs = Date.now() - geminiStart
+            console.log(`Gemini responded in ${geminiMs}ms`)
+            console.log("Gemini raw response:", x.text)
+
+            const cleaned = x.text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim()
+            try {
+                summarization = JSON.parse(cleaned)
+                console.log(`Gemini returned ${summarization.length} summaries for ${chunk.length} articles`)
+                if (summarization.length !== chunk.length) {
+                    console.warn(`--- MISMATCH: expected ${chunk.length}, got ${summarization.length} ---`)
+                }
+            } catch (parseErr) {
+                console.error(`JSON.parse failed for chunk ${chunkIndex}:`, parseErr.message)
+                console.error("Raw text that failed:", x.text)
+                continue
+            }
+        } catch (geminiErr) {
+            console.error(`Gemini API call failed for chunk ${chunkIndex}:`, geminiErr.message)
+            continue
+        }
+
+        for (let j = 0; j < chunk.length; j++) {
+            if (summarization[j]) {
+                try {
+                    const updateResult = await updateSummary(chunk[j], summarization[j].summary)
+                    console.log(`  [${j}] Updated summary for: ${chunk[j].title_}`)
+                    console.log("  Update Result:", updateResult)
+                } catch (updateErr) {
+                    console.error(`  [${j}] DynamoDB updateSummary FAILED for "${chunk[j].title_}":`, updateErr.message)
+                }
+            } else {
+                console.warn(`  [${j}] No summary returned by Gemini for: ${chunk[j].title_}`)
             }
         }
-        
     }
     console.log({website_:url,
                 newArticles_: newCount,
                 existingArticles_: existingCount
     })
-}}
+}
 
 async function scrapeArticles(url, format) {
     const sourceURL = new URL(url)
@@ -248,9 +351,11 @@ async function scrapeArticles(url, format) {
         if (!data){return {articleText: "couldn't be scraped", publishDate: "couldn't be found"}}
         const $ = cheerio.load(data)
         let paywallStatus=false
-        const paywall = paywallIndicators.some(selector => $(selector).length>0)
-        if(paywall){
-            console.log("Paywall Detected!")
+        const paywallBySelector = paywallIndicators.some(selector => $(selector).length > 0)
+        const articleBodyText = $(".entry-content, .c-entry-content, article, .article-body, .story-content, main").first().text()
+        const paywallByPhrase = paywallPhrases.some(p => p.test(articleBodyText))
+        if(paywallBySelector || paywallByPhrase){
+            console.log(`Paywall Detected! (${paywallBySelector ? 'selector' : 'phrase'})`)
             return {articleText: null, publishDate: null, paywallStatus: true}
         }
         $(
@@ -365,4 +470,4 @@ async function javascriptHTMLScraper(url){
 }
 
 
-// initialScraper("https://theverge.com")
+// initialScraper("https://wired.com")

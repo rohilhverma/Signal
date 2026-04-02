@@ -1012,7 +1012,7 @@ type ArticleSummaryCache = Map<string, Partial<Record<SummaryMode, string>>>;
 export function DashboardPage() {
   const navigate = useNavigate();
   const { density, viewMode } = usePreferences();
-  const { state: appState, toggleBookmark: ctxToggleBookmark, isBookmarked } = useAppState();
+  const { state: appState, toggleBookmark: ctxToggleBookmark, isBookmarked, addSource } = useAppState();
   const { showToast } = useToast();
 
   const [loading, setLoading] = useState(true);
@@ -1043,7 +1043,7 @@ export function DashboardPage() {
       try {
         const response = await fetch("/api/user/website?username=rohil").then((r) => r.json()) as Record<
           string,
-          Array<Record<string, { date: string; link: string; summary: string }>>
+          { paywall: string | null; articles: Array<Record<string, { date: string; link: string; summary: string }>> }
         >;
 
         if (cancelled) return;
@@ -1056,11 +1056,12 @@ export function DashboardPage() {
             domain: hostname,
             faviconUrl: `https://www.google.com/s2/favicons?sz=64&domain=${hostname}`,
             accentColor: DEFAULT_ACCENT,
+            paywall: response[sourceUrl].paywall,
           };
         });
 
         const derivedArticles: Article[] = Object.entries(response).flatMap(
-          ([sourceUrl, articleList]) =>
+          ([sourceUrl, { articles: articleList }]) =>
             articleList.flatMap((articleEntry) =>
               Object.entries(articleEntry).map(([title, fields]) => ({
                 id: fields.link,
@@ -1077,6 +1078,7 @@ export function DashboardPage() {
             )
         );
 
+        derivedSources.forEach((s) => addSource(s));
         setSources(derivedSources);
         setArticles(derivedArticles);
 
@@ -1256,6 +1258,29 @@ export function DashboardPage() {
     setToday(new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" }));
   }, []);
 
+  const [pendingUpdate, setPendingUpdate] = useState(() =>
+    typeof window !== "undefined" && localStorage.getItem("pendingFeedUpdate") === "true"
+  );
+  const [updating, setUpdating] = useState(false);
+
+  const handleUpdateFeed = useCallback(async () => {
+    setUpdating(true);
+    try {
+      await fetch("/api/user/task", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: "rohil" }),
+      });
+      localStorage.removeItem("pendingFeedUpdate");
+      setPendingUpdate(false);
+      showToast("Feed update started — new articles will appear shortly", "success");
+    } catch {
+      showToast("Failed to start feed update", "error");
+    } finally {
+      setUpdating(false);
+    }
+  }, [showToast]);
+
   // ── Reader view ──
   if (viewMode === "reader") {
     return (
@@ -1319,6 +1344,64 @@ export function DashboardPage() {
           gap: isCompact ? 20 : 28,
         }}
       >
+        {/* Pending feed update banner */}
+        {pendingUpdate && (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 12,
+              padding: "10px 16px",
+              backgroundColor: "var(--sg-accent-subtle)",
+              border: "1px solid var(--sg-border)",
+              borderRadius: 8,
+              fontSize: 13,
+              color: "var(--sg-text)",
+            }}
+          >
+            <span>You have new sources — update your feed to start seeing articles from them.</span>
+            <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+              <button
+                onClick={handleUpdateFeed}
+                disabled={updating}
+                style={{
+                  fontSize: 12.5,
+                  fontWeight: 600,
+                  color: "var(--sg-fab-color, #fff)",
+                  backgroundColor: "var(--sg-fab-bg, var(--sg-text))",
+                  border: "none",
+                  borderRadius: 6,
+                  padding: "5px 12px",
+                  cursor: updating ? "not-allowed" : "pointer",
+                  opacity: updating ? 0.6 : 1,
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {updating ? "Updating…" : "Update Feed"}
+              </button>
+              <button
+                onClick={() => {
+                  localStorage.removeItem("pendingFeedUpdate");
+                  setPendingUpdate(false);
+                }}
+                style={{
+                  fontSize: 12.5,
+                  fontWeight: 500,
+                  color: "var(--sg-muted)",
+                  backgroundColor: "transparent",
+                  border: "1px solid var(--sg-border)",
+                  borderRadius: 6,
+                  padding: "5px 10px",
+                  cursor: "pointer",
+                }}
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Daily Digest Banner */}
         <div
           style={{

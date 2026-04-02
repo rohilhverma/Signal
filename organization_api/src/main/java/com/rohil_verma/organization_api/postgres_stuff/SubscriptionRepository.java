@@ -7,4 +7,6 @@ import jakarta.transaction.Transactional;
 public interface SubscriptionRepository extends JpaRepository<Subscription, Integer> {
     @Transactional
     void deleteByUserAndWebsiteURL(User user, String websiteURL);
+
+     
 }

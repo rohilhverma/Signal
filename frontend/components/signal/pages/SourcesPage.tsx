@@ -5,15 +5,21 @@ import { Plus, Trash2, Globe, Newspaper, ChevronDown } from "lucide-react";
 import { useAppState, type ContentProfile } from "../context/AppStateContext";
 import { useToast } from "../context/ToastContext";
 import { usePreferences } from "../context/PreferencesContext";
-import { DEFAULT_ACCENT, type Source } from "../data/mockArticles";
+import { DEFAULT_ACCENT } from "../data/mockArticles";
 
 // ─── Utilities ───────────────────────────────────────────────────────────────
 
-function isValidUrl(raw: string): boolean {
+function normalizeUrl(raw: string): string {
   const trimmed = raw.trim();
-  if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) return false;
+  if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) {
+    return "https://" + trimmed;
+  }
+  return trimmed;
+}
+
+function isValidUrl(raw: string): boolean {
   try {
-    const u = new URL(trimmed);
+    const u = new URL(normalizeUrl(raw));
     return u.hostname.includes(".");
   } catch {
     return false;
@@ -226,7 +232,12 @@ function SourceRow({
   const [faviconErrored, setFaviconErrored] = useState(false);
   const accent = source.accentColor ?? DEFAULT_ACCENT;
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
+    await fetch("/api/user/url", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: "rohil", websiteURL: source.id }),
+    });
     removeSource(source.id);
     showToast(`Removed "${source.name}"`, "info");
   };
@@ -282,8 +293,22 @@ function SourceRow({
 
       {/* Source info */}
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ fontSize: 13.5, fontWeight: 500, color: "var(--sg-text)", lineHeight: 1.3 }}>
-          {source.name}
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span style={{ fontSize: 13.5, fontWeight: 500, color: "var(--sg-text)", lineHeight: 1.3 }}>
+            {source.name}
+          </span>
+          {source.paywall === "true" && (
+            <span style={{
+              fontSize: 10,
+              fontWeight: 600,
+              color: "#b45309",
+              backgroundColor: "rgba(217,119,6,0.12)",
+              borderRadius: 99,
+              padding: "1px 7px",
+            }}>
+              Paywalled
+            </span>
+          )}
         </div>
         <div style={{ fontSize: 11.5, color: "var(--sg-muted)", marginTop: 1 }}>
           {source.domain}
@@ -355,9 +380,10 @@ export function SourcesPage() {
   const [urlInput, setUrlInput] = useState("");
   const [urlError, setUrlError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
+  const [newSourceProfile, setNewSourceProfile] = useState<ContentProfile>("standard");
 
   const handleAdd = async () => {
-    const trimmed = urlInput.trim();
+    const trimmed = normalizeUrl(urlInput);
     if (!isValidUrl(trimmed)) {
       setUrlError("Please enter a valid URL");
       return;
@@ -365,25 +391,27 @@ export function SourcesPage() {
     setUrlError(null);
     setAdding(true);
 
-    // Placeholder fetch
     try {
-      await fetch("/user/website", {
+      await fetch("/api/user/website", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: trimmed }),
-      }).catch(() => {}); // ignore network errors in demo
+        body: JSON.stringify({ username: "rohil", websiteURL: trimmed, websiteContentMode: newSourceProfile }),
+      });
 
       const domain = domainFromUrl(trimmed);
       const name = nameFromDomain(domain);
-      const newSource: Source = {
-        id: domain,
+      const newSource = {
+        id: trimmed,
         name,
         domain,
         faviconUrl: `https://www.google.com/s2/favicons?sz=64&domain=${domain}`,
         accentColor: DEFAULT_ACCENT,
+        contentProfile: newSourceProfile,
       };
       addSource(newSource);
+      localStorage.setItem("pendingFeedUpdate", "true");
       setUrlInput("");
+      setNewSourceProfile("standard");
       showToast(`Added "${name}"`, "success");
     } finally {
       setAdding(false);
@@ -450,6 +478,7 @@ export function SourcesPage() {
               if (!urlError) (e.currentTarget as HTMLElement).style.borderColor = "var(--sg-border)";
             }}
           />
+          <ProfileDropdown value={newSourceProfile} onChange={setNewSourceProfile} />
           <button
             onClick={handleAdd}
             disabled={adding}
