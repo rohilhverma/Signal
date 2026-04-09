@@ -39,10 +39,12 @@ export interface AppState {
 
 type AppAction =
   | { type: "ADD_SOURCE"; payload: Source }
-  | { type: "REMOVE_SOURCE"; payload: string } // sourceId
+  | { type: "REMOVE_SOURCE"; payload: string }
   | { type: "SET_SOURCE_PROFILE"; payload: { sourceId: string; profile: ContentProfile } }
+  | { type: "SET_ARTICLES"; payload: Article[] }
   | { type: "TOGGLE_BOOKMARK"; payload: { article: Article; source: Source; summaryMode: SummaryMode } }
-  | { type: "UPDATE_ARTICLE_SUMMARY"; payload: { articleId: string; mode: SummaryMode; text: string } };
+  | { type: "UPDATE_ARTICLE_SUMMARY"; payload: { articleId: string; mode: SummaryMode; text: string } }
+  | { type: "PATCH_ARTICLE_SUMMARY"; payload: { articleId: string; mode: SummaryMode; text: string } };
 
 // ─── Reducer ─────────────────────────────────────────────────────────────────
 
@@ -97,6 +99,25 @@ function appReducer(state: AppState, action: AppAction): AppState {
       };
     }
 
+    case "SET_ARTICLES": {
+      return { ...state, articles: action.payload };
+    }
+
+    case "PATCH_ARTICLE_SUMMARY": {
+      const { articleId, mode, text } = action.payload;
+      const patch = (a: Article): Article => {
+        if (a.id !== articleId) return a;
+        if (mode === "short") return { ...a, summaryShort: text };
+        if (mode === "deepDive") return { ...a, summaryDeepDive: text };
+        return a;
+      };
+      return {
+        ...state,
+        articles: state.articles.map(patch),
+        bookmarks: state.bookmarks.map((b) => ({ ...b, article: patch(b.article) })),
+      };
+    }
+
     case "UPDATE_ARTICLE_SUMMARY": {
       const { articleId, mode, text } = action.payload;
       const update = (a: Article): Article => {
@@ -135,6 +156,8 @@ interface AppStateContextValue {
   addSource: (source: Source) => void;
   removeSource: (sourceId: string) => void;
   setSourceProfile: (sourceId: string, profile: ContentProfile) => void;
+  setArticles: (articles: Article[]) => void;
+  patchArticleSummary: (articleId: string, mode: SummaryMode, text: string) => void;
   toggleBookmark: (article: Article, source: Source, summaryMode: SummaryMode) => void;
   isBookmarked: (articleId: string) => boolean;
   updateArticleSummary: (articleId: string, mode: SummaryMode, text: string) => void;
@@ -167,6 +190,15 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     (articleId: string) => state.bookmarks.some((b) => b.article.id === articleId),
     [state.bookmarks]
   );
+  const setArticles = useCallback(
+    (articles: Article[]) => dispatch({ type: "SET_ARTICLES", payload: articles }),
+    []
+  );
+  const patchArticleSummary = useCallback(
+    (articleId: string, mode: SummaryMode, text: string) =>
+      dispatch({ type: "PATCH_ARTICLE_SUMMARY", payload: { articleId, mode, text } }),
+    []
+  );
   const updateArticleSummary = useCallback(
     (articleId: string, mode: SummaryMode, text: string) =>
       dispatch({ type: "UPDATE_ARTICLE_SUMMARY", payload: { articleId, mode, text } }),
@@ -180,6 +212,8 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         addSource,
         removeSource,
         setSourceProfile,
+        setArticles,
+        patchArticleSummary,
         toggleBookmark,
         isBookmarked,
         updateArticleSummary,

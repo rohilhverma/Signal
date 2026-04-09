@@ -14,10 +14,11 @@ const SK = { RSS: 'RSS' }
 const present = new Date()
 const cutoff = new Date(present.getTime() - (36 * 60 * 60 * 1000))
 const prompts={
-    shorter : "You are a news wire editor. Summarize each article in 2-3 bullet points. Each bullet must be one sentence, maximum 20 words. Bullet 1: What happened — the core event, stated as a fact. Bullet 2: Who is involved and what specifically they did. Bullet 3 (only if needed): A key number or outcome that adds value. Rules: No filler phrases like \"it's worth noting\" or \"according to\"; No background or history unless critical to understanding the event; If a bullet doesn't add new information, cut it; Start each bullet with the subject, not a verb. Return ONLY a valid JSON array.Do not use double quotes inside summary text. Use single quotes instead. Do not wrap in markdown backticks or code blocks, only use objects containing \"title\" and \"summary\".",
-    default : "You are a news briefing editor. For each article, write a single paragraph summary of 4-6 sentences. Each summary must include: 1. The core event — what happened, stated directly; 2. Context — how this connects to related events or industry trends; 3. Implication — what this signals or why it matters going forward; 4. Key specifics — include relevant numbers, names, and concrete details. Write in a flowing paragraph, not bullet points. Do not use filler phrases. State facts directly with no editorializing. Return ONLY a valid JSON array.Do not use double quotes inside summary text. Use single quotes instead. Do not wrap in markdown backticks or code blocks, only use objects containing \"title\" and \"summary\".",
-    longer: "You are a senior analyst writing intelligence briefings. For each article, write a detailed analysis following this exact structure:\n\n[PARAGRAPH 1 - THE EVENT]\nWhat happened, who was involved, and the concrete specifics. Include all relevant numbers, names, dates, and technical details found in the article. Leave nothing important out. End this paragraph, then start a new one.\n\n[PARAGRAPH 2 - THE CONTEXT] (only if the article provides it)\nUsing ONLY information found within the article, explain how this event connects to related developments, competing efforts, or previous events that the article mentions. Do not reference any information outside of the provided text. If the article does not provide broader context, skip this paragraph entirely.\n\n[PARAGRAPH 3 - THE IMPLICATIONS] (only if the article supports it)\nBased ONLY on what the article states or directly implies, what does this signal going forward? Do not speculate beyond what the text supports. If the article does not discuss implications, skip this paragraph entirely.\n\nRules:\n- Each paragraph MUST be separated by a blank line\n- Never combine multiple sections into one paragraph\n- Include specific numbers, names, and data points\n- Draw connections ONLY between details within the article\n- No filler phrases or editorializing\n- Never introduce outside knowledge\n- Every sentence must be traceable to the article text\n\nReturn ONLY a valid JSON array.Do not use double quotes inside summary text. Use single quotes instead. Do not wrap in markdown backticks or code blocks, only use objects containing \"title\" and \"summary\"."
+    "shorter" : "You are a news wire editor. Summarize each article in 2-3 bullet points. Each bullet must be one sentence, maximum 20 words. Bullet 1: What happened — the core event, stated as a fact. Bullet 2: Who is involved and what specifically they did. Bullet 3 (only if needed): A key number or outcome that adds value. Rules: No filler phrases like \"it's worth noting\" or \"according to\"; No background or history unless critical to understanding the event; If a bullet doesn't add new information, cut it; Start each bullet with the subject, not a verb. Return ONLY a valid JSON array. Do not wrap in markdown backticks or code blocks, only use objects containing \"title\" and \"summary\".",
+    "default" : "You are a news briefing editor. For each article, write a single paragraph summary of 4-6 sentences. Each summary must include: 1. The core event — what happened, stated directly; 2. Context — how this connects to related events or industry trends; 3. Implication — what this signals or why it matters going forward; 4. Key specifics — include relevant numbers, names, and concrete details. Write in a flowing paragraph, not bullet points. Do not use filler phrases. State facts directly with no editorializing. Return ONLY a valid JSON array. Do not wrap in markdown backticks or code blocks, only use objects containing \"title\" and \"summary\".",
+    "longer": "You are a senior analyst writing intelligence briefings. For each article, write a detailed analysis following this exact structure:\n\n[PARAGRAPH 1 - THE EVENT]\nWhat happened, who was involved, and the concrete specifics. Include all relevant numbers, names, dates, and technical details found in the article. Leave nothing important out. End this paragraph, then start a new one.\n\n[PARAGRAPH 2 - THE CONTEXT] (only if the article provides it)\nUsing ONLY information found within the article, explain how this event connects to related developments, competing efforts, or previous events that the article mentions. Do not reference any information outside of the provided text. If the article does not provide broader context, skip this paragraph entirely.\n\n[PARAGRAPH 3 - THE IMPLICATIONS] (only if the article supports it)\nBased ONLY on what the article states or directly implies, what does this signal going forward? Do not speculate beyond what the text supports. If the article does not discuss implications, skip this paragraph entirely.\n\nRules:\n- Each paragraph MUST be separated by a blank line\n- Never combine multiple sections into one paragraph\n- Include specific numbers, names, and data points\n- Draw connections ONLY between details within the article\n- No filler phrases or editorializing\n- Never introduce outside knowledge\n- Every sentence must be traceable to the article text\n\nReturn ONLY a valid JSON array. Do not wrap in markdown backticks or code blocks, only use objects containing \"title\" and \"summary\"."
 }
+const promptIndex={"shorter":0,"default":1,"longer":2}
 const nonTechPatterns = [
     /\bbest deals?\b/i,
     /\bdeals? to shop\b/i,
@@ -93,8 +94,10 @@ async function guidChecker(guid){
     return dynamo.send(new GetCommand({TableName: TABLE, Key: {websiteURLs: guid, SK: "EXISTS"}}))
 }
 
-async function newArticle(item){
+async function newArticle(item, summary, mode){
     const week = Math.floor(Date.now() / 1000) + (7 * 24 * 60 * 60);
+    const summaryArr = ["", "", ""];
+    summaryArr[promptIndex[mode]] = summary;
 
     return dynamo.send(new PutCommand({
         TableName: TABLE,
@@ -102,7 +105,7 @@ async function newArticle(item){
             websiteURLs: item.websiteName,
             SK: item.link,
             title: item.title_,
-            summary: "",
+            summary: summaryArr,
             articleText: item.articleText,
             date: item.date,
             ttl: week,
@@ -120,14 +123,14 @@ async function flagRSSPaywall(baseUrl){
     }))
 }
 
-async function updateSummary(item, summary){
+async function updateSummary(item, summary,mode){
     return dynamo.send(new UpdateCommand({
         TableName: TABLE,
         Key: {
         websiteURLs: item.websiteName,
         SK: item.link
         },
-        UpdateExpression: 'SET summary = :summary', 
+        UpdateExpression: `SET summary[${promptIndex[mode]}] = :summary`,
         ExpressionAttributeValues: {':summary': summary}
     }))
 }
@@ -181,7 +184,7 @@ export const handler = async(event, useContext) => {
     console.log(JSON.stringify(jSON, null, 2))
 }
 
-async function initialScraper(url) {
+async function initialScraper(url,mode="default") {
     const cleanURL = new URL(url)
     const data = await linkBuilder(cleanURL)
     if (!data){
@@ -195,13 +198,22 @@ async function initialScraper(url) {
     
     const items = $(formats[format].itemSelector).toArray()
     console.log(`--- DEBUG: FOUND ${items.length} ARTICLES --- \n`);
-    const webName = $(formats[format].websiteTitle).text()
-    const json_ = {
-        "publisher": `${webName}`,
-        "articles": []
-    }
+    let webName = null
+    try {
+        const homeResp = await axios.get(cleanURL.origin, axiosConfig)
+        const $home = cheerio.load(homeResp.data)
+        webName = $home('meta[property="og:site_name"]').attr('content')?.trim() || null
+    } catch(e) { /* homepage fetch failed, fall through */ }
+    if (!webName) webName = $(formats[format].websiteTitle).text().trim() || cleanURL.hostname.replace('www.', '')
+    await dynamo.send(new UpdateCommand({
+        TableName: TABLE,
+        Key: { websiteURLs: cleanURL.origin, SK: SK.RSS },
+        UpdateExpression: 'SET siteName = :n',
+        ExpressionAttributeValues: { ':n': webName }
+    }))
     let existingCount=0
     let newCount=0
+    let scrapedCount=0
     let paywallCount=0
     let articleList=[]
     for (const element of items) {
@@ -253,13 +265,11 @@ async function initialScraper(url) {
             date:articleTextAndTime.publishDate,
             paywall: false
         }
-        await dbGUID(guid)
-        await newArticle(articleContent)
-        newCount+=1
+        scrapedCount+=1
         console.log(articleContent)
         articleList.push(articleContent)
     }
-    const totalProcessed = newCount + paywallCount
+    const totalProcessed = scrapedCount + paywallCount
     console.log(`Paywall: ${paywallCount}/${totalProcessed} articles`)
     if (totalProcessed > 0 && paywallCount / totalProcessed >= 0.7) {
         console.log(`70%+ paywall rate detected for ${url}, flagging RSS row`)
@@ -279,7 +289,7 @@ async function initialScraper(url) {
             const geminiStart = Date.now()
             const x = await ai.models.generateContent({
                 model:"gemini-2.5-flash-lite",
-                config: {systemInstruction: prompts.default,
+                config: {systemInstruction: prompts[mode],
                     responseMimeType:"application/json",
                     responseSchema: {
                     type: 'array',
@@ -318,14 +328,15 @@ async function initialScraper(url) {
         for (let j = 0; j < chunk.length; j++) {
             if (summarization[j]) {
                 try {
-                    const updateResult = await updateSummary(chunk[j], summarization[j].summary)
-                    console.log(`  [${j}] Updated summary for: ${chunk[j].title_}`)
-                    console.log("  Update Result:", updateResult)
-                } catch (updateErr) {
-                    console.error(`  [${j}] DynamoDB updateSummary FAILED for "${chunk[j].title_}":`, updateErr.message)
+                    await dbGUID(chunk[j].guid_)
+                    await newArticle(chunk[j], summarization[j].summary, mode)
+                    newCount+=1
+                    console.log(`  [${j}] Saved article with summary: ${chunk[j].title_}`)
+                } catch (saveErr) {
+                    console.error(`  [${j}] DB save FAILED for "${chunk[j].title_}":`, saveErr.message)
                 }
             } else {
-                console.warn(`  [${j}] No summary returned by Gemini for: ${chunk[j].title_}`)
+                console.warn(`  [${j}] No summary from Gemini for: ${chunk[j].title_}, skipping DB save`)
             }
         }
     }
@@ -468,6 +479,5 @@ async function javascriptHTMLScraper(url){
         await browser.close()
     }
 }
-
 
 // initialScraper("https://wired.com")

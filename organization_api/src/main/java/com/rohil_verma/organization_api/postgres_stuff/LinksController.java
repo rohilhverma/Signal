@@ -2,7 +2,9 @@ package com.rohil_verma.organization_api.postgres_stuff;
 
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ConcurrentMap;
 
+import org.jspecify.annotations.NonNull;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -75,6 +77,19 @@ public class LinksController {
         System.out.println(response + "\n\n" + request.getUsername() + "\n" + request.getWebsiteURL() + "\n" + request.getContentMode());
         return response;
     }
+
+    @GetMapping("/user/website/cache")
+    public ConcurrentMap<String, @NonNull String> getMethodName() {
+        return dynamoService.cacheContent();
+    }
+    
+    @PostMapping("/user/url/resummarization")
+    public String resummarize(@RequestBody UserRequest request) throws Exception {
+        String result = dynamoService.resummarizeRequest(request.getWebsiteURL(), request.getWebsiteContentMode());
+        dynamoService.updateSummary(request.getWebsiteURL(), request.getWebsiteContentMode(), result);
+        return result;
+    }
+    
     
 
 

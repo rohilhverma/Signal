@@ -53,11 +53,102 @@ function getAgeState(article: Article, seenIds: Set<string>): AgeState {
   return "new";
 }
 
-// Get the active summary text for an article given a mode
+// Extract the summary text from a raw Gemini JSON response or plain string.
+// Returns null (instead of the raw JSON) when the string looks like JSON but
+// can't be properly extracted — this prevents raw-JSON display and allows
+// handleSummaryModeChange to re-fetch rather than treating it as preloaded.
+function normalizeSummaryValue(value: unknown): string | null {
+  if (typeof value === "string") {
+    return value.trim() || null;
+  }
+
+  if (Array.isArray(value)) {
+    const lines = value
+      .map((item) => (typeof item === "string" ? item.trim() : ""))
+      .filter(Boolean);
+    return lines.length > 0 ? lines.join("\n") : null;
+  }
+
+  return null;
+}
+
+function extractSummaryText(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const trimmed = raw
+    .trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/, "")
+    .trim();
+  if (!trimmed) return null;
+
+  if (/^(Gemini error:|Cache miss:)/i.test(trimmed)) {
+    return null;
+  }
+
+  // JSON string wrapper: "\"[{\\\"summary\\\":\\\"...\\\"}]\""
+  if (
+    (trimmed.startsWith("\"") && trimmed.endsWith("\"")) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    try {
+      const unwrapped = JSON.parse(trimmed) as string;
+      if (typeof unwrapped === "string" && unwrapped !== trimmed) {
+        return extractSummaryText(unwrapped);
+      }
+    } catch {}
+  }
+
+  // JSON array: [{"title":"...","summary":"..."}]
+  if (trimmed.startsWith("[")) {
+    try {
+      const parsed = JSON.parse(trimmed) as Array<{ summary?: unknown }>;
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return normalizeSummaryValue(parsed[0]?.summary);
+      }
+    } catch {}
+  }
+
+  // JSON object (Gemini sometimes returns an object instead of an array):
+  // {"title":"...","summary":"..."} or {"summary":"..."}
+  if (trimmed.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(trimmed) as { summary?: unknown };
+      return normalizeSummaryValue(parsed?.summary);
+    } catch {}
+  }
+
+  // Fallback for Gemini's malformed JSON-ish responses, e.g.
+  // [{title:'...',summary:'...'}] or {"summary":"..."} with escaping issues.
+  const summaryFieldMatch = trimmed.match(
+    /["']summary["']\s*:\s*(?:"((?:\\.|[^"])*)"|'((?:\\.|[^'])*)')/s
+  );
+  const summaryField = summaryFieldMatch?.[1] ?? summaryFieldMatch?.[2];
+  if (summaryField) {
+    return summaryField
+      .replace(/\\n/g, "\n")
+      .replace(/\\"/g, "\"")
+      .replace(/\\'/g, "'")
+      .trim() || null;
+  }
+
+  // Plain text — return as-is
+  return trimmed || null;
+}
+
+function splitShortSummary(summary: string): string[] {
+  return summary
+    .replace(/\r\n?/g, "\n")
+    .replace(/([^\n])\s+(?=(?:[-•*]\s)|(?:\d+\.\s))/g, "$1\n")
+    .split("\n")
+    .map((line) => line.trim().replace(/^[-•*\d.)\s]+/, ""))
+    .filter(Boolean);
+}
+
+// Get the active summary text for an article given a mode, extracting from JSON if needed
 function getActiveSummary(article: Article, mode: SummaryMode): string | null {
-  if (mode === "short") return article.summaryShort;
-  if (mode === "deepDive") return article.summaryDeepDive;
-  return article.summaryDefault;
+  if (mode === "short") return extractSummaryText(article.summaryShort);
+  if (mode === "deepDive") return extractSummaryText(article.summaryDeepDive);
+  return extractSummaryText(article.summaryDefault) ?? "";
 }
 
 // ─── Skeleton ───────────────────────────────────────────────────────────────
@@ -192,7 +283,6 @@ function FaviconBubble({
       alt={alt}
       width={size}
       height={size}
-      crossOrigin="anonymous"
       onError={() => setErrored(true)}
       style={{
         width: size,
@@ -275,6 +365,49 @@ function SummaryModeToggle({
   );
 }
 
+function CompactBulletList({
+  items,
+  accentColor,
+  fontSize,
+  opacity,
+}: {
+  items: string[];
+  accentColor: string;
+  fontSize: number;
+  opacity: number;
+}) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+      {items.map((bullet, i) => (
+        <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 9 }}>
+          <span
+            aria-hidden="true"
+            style={{
+              width: 5,
+              height: 5,
+              borderRadius: "50%",
+              backgroundColor: accentColor,
+              opacity: opacity * 0.9,
+              flexShrink: 0,
+              marginTop: Math.max(6, Math.round(fontSize * 0.48)),
+            }}
+          />
+          <span
+            style={{
+              fontSize,
+              color: "var(--sg-text)",
+              opacity,
+              lineHeight: 1.6,
+            }}
+          >
+            {bullet}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ─── Article Card ─────────────────────────────────────────────────────────────
 
 interface ArticleCardProps {
@@ -289,6 +422,7 @@ interface ArticleCardProps {
   summaryMode: SummaryMode;
   onSummaryModeChange: (mode: SummaryMode) => void;
   loadingModes: Set<SummaryMode>;
+  sourceCollapsed: boolean;
 }
 
 function ArticleCard({
@@ -303,6 +437,7 @@ function ArticleCard({
   summaryMode,
   onSummaryModeChange,
   loadingModes,
+  sourceCollapsed,
 }: ArticleCardProps) {
   const isRead = ageState === "read";
   const accent = source.accentColor ?? DEFAULT_ACCENT;
@@ -311,6 +446,9 @@ function ArticleCard({
   const shadowIntensity = isRead ? "none" : "0 1px 4px rgba(0,0,0,0.06)";
   const activeSummary = getActiveSummary(article, summaryMode);
   const isLoadingCurrent = loadingModes.has(summaryMode);
+  const shortSummaryLines = summaryMode === "short" && activeSummary
+    ? splitShortSummary(activeSummary)
+    : [];
 
   return (
     <article
@@ -469,80 +607,71 @@ function ArticleCard({
             transition: "max-height 0.28s ease, opacity 0.2s ease",
           }}
         >
-          <div style={{ paddingLeft: 36, marginTop: 10 }}>
-            {isLoadingCurrent ? (
-              <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0" }}>
-                <Loader2
-                  style={{
-                    width: 14,
-                    height: 14,
-                    color: accent,
-                    animation: "spin 1s linear infinite",
-                  }}
-                />
-                <span style={{ fontSize: 12.5, color: "var(--sg-muted)" }}>Generating summary…</span>
-              </div>
-            ) : summaryMode === "short" && activeSummary ? (
-              <ul
-                style={{
-                  margin: 0,
-                  paddingLeft: 16,
-                  display: "flex",
-                  flexDirection: "column",
-                  gap: 5,
-                }}
-              >
-                {activeSummary.split("\n").filter(Boolean).map((bullet, i) => (
-                  <li
-                    key={i}
+          {(isLoadingCurrent || activeSummary) && (
+            <div style={{ paddingLeft: 36, marginTop: 10 }}>
+              {isLoadingCurrent ? (
+                <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0" }}>
+                  <Loader2
                     style={{
-                      fontSize: 13,
-                      color: "var(--sg-text)",
-                      opacity: isRead ? 0.6 : 0.88,
-                      lineHeight: 1.6,
-                      paddingLeft: 2,
+                      width: 14,
+                      height: 14,
+                      color: accent,
+                      animation: "spin 1s linear infinite",
                     }}
-                  >
-                    {bullet.replace(/^[-•]\s*/, "")}
-                  </li>
-                ))}
-              </ul>
-            ) : activeSummary ? (
-              <p
-                style={{
-                  fontSize: 13,
-                  color: "var(--sg-text)",
-                  opacity: isRead ? 0.6 : 0.88,
-                  lineHeight: 1.68,
-                  margin: 0,
-                }}
-              >
-                {activeSummary}
-              </p>
-            ) : null}
-          </div>
+                  />
+                  <span style={{ fontSize: 12.5, color: "var(--sg-muted)" }}>Generating summary…</span>
+                </div>
+              ) : summaryMode === "short" && shortSummaryLines.length > 0 ? (
+                <CompactBulletList
+                  items={shortSummaryLines}
+                  accentColor={accent}
+                  fontSize={13}
+                  opacity={isRead ? 0.6 : 0.88}
+                />
+              ) : activeSummary ? (
+                <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  {activeSummary.split("\n\n").filter(Boolean).map((para, i) => (
+                    <p
+                      key={i}
+                      style={{
+                        fontSize: 13,
+                        color: "var(--sg-text)",
+                        opacity: isRead ? 0.6 : 0.88,
+                        lineHeight: 1.68,
+                        margin: 0,
+                      }}
+                    >
+                      {para.trim()}
+                    </p>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+          )}
         </div>
 
         {/* Collapsed preview (2-line clamp) */}
-        {!expanded && (
-          <p
-            style={{
-              fontSize: 12.5,
-              color: "var(--sg-muted)",
-              opacity: textOpacity * 0.8,
-              lineHeight: 1.6,
-              marginTop: 6,
-              paddingLeft: 36,
-              display: "-webkit-box",
-              WebkitLineClamp: 2,
-              WebkitBoxOrient: "vertical",
-              overflow: "hidden",
-              transition: "opacity 0.25s ease",
-            }}
-          >
+        <div style={{
+          overflow: "hidden",
+          maxHeight: !expanded && !sourceCollapsed ? 60 : 0,
+          opacity: !expanded && !sourceCollapsed ? textOpacity * 0.8 : 0,
+          marginTop: !expanded && !sourceCollapsed ? 6 : 0,
+          transition: "max-height 0.28s ease, opacity 0.22s ease, margin-top 0.25s ease",
+        }}>
+          <p style={{
+            fontSize: 12.5,
+            color: "var(--sg-muted)",
+            lineHeight: 1.6,
+            paddingLeft: 36,
+            margin: 0,
+            display: "-webkit-box",
+            WebkitLineClamp: 2,
+            WebkitBoxOrient: "vertical",
+            overflow: "hidden",
+          }}>
             {article.summaryDefault}
           </p>
-        )}
+        </div>
 
         {/* Footer */}
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 10, paddingLeft: 36 }}>
@@ -602,6 +731,8 @@ interface SourceGroupProps {
   summaryModes: Map<string, SummaryMode>;
   onSummaryModeChange: (articleId: string, mode: SummaryMode) => void;
   loadingModesByArticle: Map<string, Set<SummaryMode>>;
+  sourceCollapsed: boolean;
+  onToggleSourceCollapse: () => void;
 }
 
 function SourceGroup({
@@ -616,10 +747,16 @@ function SourceGroup({
   summaryModes,
   onSummaryModeChange,
   loadingModesByArticle,
+  sourceCollapsed,
+  onToggleSourceCollapse,
 }: SourceGroupProps) {
   const accent = source.accentColor ?? DEFAULT_ACCENT;
   const visibleArticles = articles.filter((a) => getAgeState(a, seenIds) !== "expired");
   if (visibleArticles.length === 0) return null;
+
+  const COLLAPSED_LIMIT = 4;
+  const displayedArticles = sourceCollapsed ? visibleArticles.slice(0, COLLAPSED_LIMIT) : visibleArticles;
+  const hiddenCount = sourceCollapsed ? Math.max(0, visibleArticles.length - COLLAPSED_LIMIT) : 0;
 
   return (
     <section aria-label={source.name} style={{ "--source-accent": accent } as React.CSSProperties}>
@@ -629,25 +766,20 @@ function SourceGroup({
           display: "flex",
           alignItems: "center",
           gap: 8,
-          marginBottom: 10,
-          paddingBottom: 8,
-          borderBottom: `1.5px solid ${accent}30`,
+          marginBottom: 12,
+          padding: "8px 12px",
+          borderRadius: 8,
+          backgroundColor: `${accent}0d`,
+          border: `1px solid ${accent}22`,
         }}
       >
         <FaviconBubble src={source.faviconUrl} alt={source.name} size={20} accentColor={accent} />
-        <span
-          style={{
-            fontSize: 12,
-            fontWeight: 700,
-            color: accent,
-            letterSpacing: "0.01em",
-          }}
-        >
+        <span style={{ fontSize: 15, fontWeight: 700, color: accent, letterSpacing: "0.01em" }}>
           {source.name}
         </span>
         <span
           style={{
-            fontSize: 10.5,
+            fontSize: 11.5,
             color: "var(--sg-muted)",
             backgroundColor: `${accent}14`,
             border: `1px solid ${accent}28`,
@@ -658,10 +790,36 @@ function SourceGroup({
         >
           {visibleArticles.length}
         </span>
+        <button
+          onClick={onToggleSourceCollapse}
+          aria-label={sourceCollapsed ? "Expand source" : "Collapse source"}
+          title={sourceCollapsed ? "Expand all" : "Collapse all"}
+          style={{
+            marginLeft: "auto",
+            background: "none",
+            border: "none",
+            padding: "3px 6px",
+            cursor: "pointer",
+            color: "var(--sg-muted)",
+            display: "flex",
+            alignItems: "center",
+            gap: 4,
+            fontSize: 11,
+            borderRadius: 5,
+            transition: "background-color 0.15s ease",
+          }}
+          onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.backgroundColor = "var(--sg-nav-hover)")}
+          onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.backgroundColor = "transparent")}
+        >
+          {sourceCollapsed
+            ? <><ChevronsUpDown style={{ width: 12, height: 12 }} /> Expand</>
+            : <><ChevronsDownUp style={{ width: 12, height: 12 }} /> Collapse</>
+          }
+        </button>
       </div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        {visibleArticles.map((article) => {
+        {displayedArticles.map((article) => {
           const ageState = getAgeState(article, seenIds);
           return (
             <ArticleCard
@@ -677,9 +835,28 @@ function SourceGroup({
               summaryMode={summaryModes.get(article.id) ?? "default"}
               onSummaryModeChange={(mode) => onSummaryModeChange(article.id, mode)}
               loadingModes={loadingModesByArticle.get(article.id) ?? new Set()}
+              sourceCollapsed={sourceCollapsed}
             />
           );
         })}
+        {hiddenCount > 0 && (
+          <button
+            onClick={onToggleSourceCollapse}
+            style={{
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              color: "var(--sg-muted)",
+              fontSize: 12,
+              fontWeight: 500,
+              textAlign: "left",
+              padding: "4px 0 0 6px",
+              letterSpacing: "0.02em",
+            }}
+          >
+            ··· {hiddenCount} more {hiddenCount === 1 ? "article" : "articles"}
+          </button>
+        )}
       </div>
     </section>
   );
@@ -749,6 +926,9 @@ function ReaderView({
   const summaryMode = summaryModes.get(article.id) ?? "default";
   const activeSummary = getActiveSummary(article, summaryMode);
   const isLoadingCurrent = (loadingModesByArticle.get(article.id) ?? new Set()).has(summaryMode);
+  const shortSummaryLines = summaryMode === "short" && activeSummary
+    ? splitShortSummary(activeSummary)
+    : [];
 
   return (
     <div
@@ -766,7 +946,7 @@ function ReaderView({
       <article
         style={{
           width: "100%",
-          maxWidth: 700,
+          maxWidth: 860,
           display: "flex",
           flexDirection: "column",
           gap: 20,
@@ -843,33 +1023,38 @@ function ReaderView({
         </div>
 
         {/* Summary body */}
-        <div
-          style={{
-            backgroundColor: "var(--sg-surface)",
-            border: "1px solid var(--sg-border)",
-            borderRadius: 10,
-            padding: "20px 24px",
-          }}
-        >
-          {isLoadingCurrent ? (
-            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <Loader2 style={{ width: 16, height: 16, color: accent, animation: "spin 1s linear infinite" }} />
-              <span style={{ fontSize: 14, color: "var(--sg-muted)" }}>Generating summary…</span>
-            </div>
-          ) : summaryMode === "short" && activeSummary ? (
-            <ul style={{ margin: 0, paddingLeft: 18, display: "flex", flexDirection: "column", gap: 8 }}>
-              {activeSummary.split("\n").filter(Boolean).map((bullet, i) => (
-                <li key={i} style={{ fontSize: 15, color: "var(--sg-text)", opacity: 0.9, lineHeight: 1.65 }}>
-                  {bullet.replace(/^[-•]\s*/, "")}
-                </li>
-              ))}
-            </ul>
-          ) : activeSummary ? (
-            <p style={{ fontSize: 15, color: "var(--sg-text)", lineHeight: 1.75, margin: 0, opacity: 0.9 }}>
-              {activeSummary}
-            </p>
-          ) : null}
-        </div>
+        {(isLoadingCurrent || activeSummary) && (
+          <div
+            style={{
+              backgroundColor: "var(--sg-surface)",
+              border: "1px solid var(--sg-border)",
+              borderRadius: 10,
+              padding: "20px 24px",
+            }}
+          >
+            {isLoadingCurrent ? (
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <Loader2 style={{ width: 16, height: 16, color: accent, animation: "spin 1s linear infinite" }} />
+                <span style={{ fontSize: 14, color: "var(--sg-muted)" }}>Generating summary…</span>
+              </div>
+            ) : summaryMode === "short" && shortSummaryLines.length > 0 ? (
+              <CompactBulletList
+                items={shortSummaryLines}
+                accentColor={accent}
+                fontSize={15}
+                opacity={0.9}
+              />
+            ) : activeSummary ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                {activeSummary.split("\n\n").filter(Boolean).map((para, i) => (
+                  <p key={i} style={{ fontSize: 15, color: "var(--sg-text)", lineHeight: 1.75, margin: 0, opacity: 0.9 }}>
+                    {para.trim()}
+                  </p>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        )}
 
         {/* Actions row */}
         <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
@@ -1012,12 +1197,12 @@ type ArticleSummaryCache = Map<string, Partial<Record<SummaryMode, string>>>;
 export function DashboardPage() {
   const navigate = useNavigate();
   const { density, viewMode } = usePreferences();
-  const { state: appState, toggleBookmark: ctxToggleBookmark, isBookmarked, addSource } = useAppState();
+  const { state: appState, toggleBookmark: ctxToggleBookmark, isBookmarked, addSource, setArticles, patchArticleSummary: patchArticle } = useAppState();
   const { showToast } = useToast();
 
-  const [loading, setLoading] = useState(true);
-  const [articles, setArticles] = useState<Article[]>([]);
-  const [sources, setSources] = useState<Source[]>([]);
+  const [loading, setLoading] = useState(appState.sources.length === 0);
+  const sources = appState.sources;
+  const articles = appState.articles;
 
   const lastVisitRef = useRef<Date>(new Date(Date.now() - 24 * 60 * 60 * 1000));
   const [newSinceLastVisit, setNewSinceLastVisit] = useState<Set<string>>(new Set());
@@ -1025,6 +1210,7 @@ export function DashboardPage() {
 
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
   const [allExpanded, setAllExpanded] = useState(false);
+  const [collapsedSources, setCollapsedSources] = useState<Set<string>>(new Set());
 
   // Per-article active summary mode
   const [summaryModes, setSummaryModes] = useState<Map<string, SummaryMode>>(new Map());
@@ -1037,28 +1223,43 @@ export function DashboardPage() {
 
   // Fetch / load data
   useEffect(() => {
+    if (sources.length > 0) return;
     let cancelled = false;
     async function load() {
       setLoading(true);
       try {
-        const response = await fetch("/api/user/website?username=rohil").then((r) => r.json()) as Record<
+        const res = await fetch("/api/user/website?username=rohil");
+        if (!res.ok) {
+          const text = await res.text();
+          throw new Error(`Backend error ${res.status}: ${text}`);
+        }
+        const response = await res.json() as Record<
           string,
-          { paywall: string | null; articles: Array<Record<string, { date: string; link: string; summary: string }>> }
+          { siteName: string | null; paywall: string | null; articles: Array<Record<string, { date: string; link: string; summaryDefault: string; summaryShort: string; summaryLong: string }>> }
         >;
 
         if (cancelled) return;
 
-        const derivedSources: Source[] = Object.keys(response).map((sourceUrl) => {
-          const hostname = new URL(sourceUrl).hostname.replace(/^www\./, "");
-          return {
-            id: sourceUrl,
-            name: hostname.split(".")[0].replace(/^\w/, (c) => c.toUpperCase()),
-            domain: hostname,
-            faviconUrl: `https://www.google.com/s2/favicons?sz=64&domain=${hostname}`,
-            accentColor: DEFAULT_ACCENT,
-            paywall: response[sourceUrl].paywall,
-          };
-        });
+        const derivedSources: Source[] = await Promise.all(
+          Object.keys(response).map(async (sourceUrl) => {
+            const hostname = new URL(sourceUrl).hostname.replace(/^www\./, "");
+            let faviconUrl = `https://www.google.com/s2/favicons?sz=64&domain=${hostname}`;
+            let accentColor = DEFAULT_ACCENT;
+            try {
+              const fav = await fetch(`/api/favicon?domain=${hostname}`).then((r) => r.json()) as { faviconUrl: string; color: string };
+              faviconUrl = fav.faviconUrl;
+              accentColor = fav.color;
+            } catch {}
+            return {
+              id: sourceUrl,
+              name: response[sourceUrl].siteName ?? hostname.split(".")[0].replace(/^\w/, (c) => c.toUpperCase()),
+              domain: hostname,
+              faviconUrl,
+              accentColor,
+              paywall: response[sourceUrl].paywall,
+            };
+          })
+        );
 
         const derivedArticles: Article[] = Object.entries(response).flatMap(
           ([sourceUrl, { articles: articleList }]) =>
@@ -1068,18 +1269,20 @@ export function DashboardPage() {
                 sourceId: sourceUrl,
                 title,
                 url: fields.link,
-                summaryDefault: fields.summary ?? "",
-                summaryShort: null,
-                summaryDeepDive: null,
+                summaryDefault: extractSummaryText(fields.summaryDefault) ?? "",
+                summaryShort: extractSummaryText(fields.summaryShort),
+                summaryDeepDive: extractSummaryText(fields.summaryLong),
                 publishedAt: new Date(fields.date),
                 originalWordCount: 0,
-                summaryWordCount: fields.summary?.split(/\s+/).length ?? 0,
+                summaryWordCount: (extractSummaryText(fields.summaryDefault) ?? "")
+                  .split(/\s+/)
+                  .filter(Boolean)
+                  .length,
               }))
             )
         );
 
         derivedSources.forEach((s) => addSource(s));
-        setSources(derivedSources);
         setArticles(derivedArticles);
 
         const lastVisit = lastVisitRef.current;
@@ -1107,16 +1310,23 @@ export function DashboardPage() {
     }
     load();
     return () => { cancelled = true; };
-  }, []);
+  }, [sources.length]);
 
   // Handle summary mode change — fetch if not already cached
   const handleSummaryModeChange = useCallback(
     async (articleId: string, mode: SummaryMode) => {
       setSummaryModes((prev) => new Map(prev).set(articleId, mode));
 
-      // Check if already in cache
+      // Default is always available — no fetch needed
+      if (mode === "default") return;
+
+      const article = articles.find((a: Article) => a.id === articleId);
+      if (!article) return;
+
+      // Check session cache or pre-loaded value from DynamoDB
+      const preLoaded = mode === "short" ? article.summaryShort : article.summaryDeepDive;
       const cached = summaryCache.get(articleId)?.[mode];
-      if (cached !== undefined) return;
+      if (cached || preLoaded) return;
 
       // Check if already loading
       const currentLoading = loadingModesByArticle.get(articleId);
@@ -1132,47 +1342,33 @@ export function DashboardPage() {
       });
 
       try {
-        // Simulate POST /articles/resummarize
-        await fetch("/articles/resummarize", {
+        // Map frontend mode to backend prompt key
+        const backendMode = mode === "short" ? "shorter" : "longer";
+
+        const res = await fetch("/api/user/url/resummarization", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ articleId, mode }),
-        }).catch(() => null); // ignore network errors — we'll use mock
-
-        // Simulate 2s delay + mock response
-        await new Promise((res) => setTimeout(res, 2000));
-
-        const article = articles.find((a: Article) => a.id === articleId);
-        let generatedText = "";
-        if (mode === "short") {
-          generatedText = [
-            `${article?.title?.split(" ").slice(0, 5).join(" ")}... — key development in the sector.`,
-            `Impact: significant implications for industry players and end users.`,
-            `What to watch: follow-up announcements expected within weeks.`,
-          ].join("\n");
-        } else if (mode === "deepDive") {
-          const def = article?.summaryDefault ?? "";
-          generatedText = `${def}\n\nZooming out, this development sits within a broader pattern of consolidation and competition reshaping the industry. Analysts note that timing, pricing strategy, and regulatory climate will all play decisive roles in determining long-term outcomes.\n\nStakeholders across the value chain are likely to adapt quickly, with smaller players potentially squeezed by the move while larger incumbents reassess their roadmaps over the coming quarters.`;
-        }
-
-        setSummaryCache((prev) => {
-          const next = new Map(prev);
-          const existing = next.get(articleId) ?? {};
-          next.set(articleId, { ...existing, [mode]: generatedText });
-          return next;
+          body: JSON.stringify({ websiteURL: article.url, websiteContentMode: backendMode }),
         });
 
-        // Also patch into articles state so getActiveSummary works via article fields
-        setArticles((prev) =>
-          prev.map((a) => {
-            if (a.id !== articleId) return a;
-            return {
-              ...a,
-              summaryShort: mode === "short" ? generatedText : a.summaryShort,
-              summaryDeepDive: mode === "deepDive" ? generatedText : a.summaryDeepDive,
-            };
-          })
-        );
+        if (!res.ok) throw new Error(`Resummarize failed: ${res.status}`);
+
+        const raw = await res.text();
+        const generatedText = extractSummaryText(raw);
+
+        if (generatedText) {
+          setSummaryCache((prev) => {
+            const next = new Map(prev);
+            const existing = next.get(articleId) ?? {};
+            next.set(articleId, { ...existing, [mode]: generatedText });
+            return next;
+          });
+
+          patchArticle(articleId, mode, generatedText);
+        }
+      } catch (err) {
+        console.error("Resummarize error:", err);
+        showToast("Failed to generate summary", "error");
       } finally {
         setLoadingModesByArticle((prev) => {
           const next = new Map(prev);
@@ -1183,7 +1379,7 @@ export function DashboardPage() {
         });
       }
     },
-    [summaryCache, loadingModesByArticle]
+    [summaryCache, loadingModesByArticle, articles, patchArticle, showToast]
   );
 
   // Computed stats
@@ -1298,7 +1494,7 @@ export function DashboardPage() {
           @keyframes spin { to { transform: rotate(360deg); } }
         `}</style>
         {loading ? (
-          <div style={{ padding: outerPadding, display: "flex", flexDirection: "column", gap: 10, maxWidth: 700, margin: "0 auto" }}>
+          <div style={{ padding: outerPadding, display: "flex", flexDirection: "column", gap: 10, maxWidth: 860, margin: "0 auto" }}>
             {Array.from({ length: 3 }).map((_, i) => <SkeletonCard key={i} />)}
           </div>
         ) : (
@@ -1336,7 +1532,7 @@ export function DashboardPage() {
 
       <div
         style={{
-          maxWidth: 780,
+          maxWidth: 960,
           margin: "0 auto",
           padding: outerPadding,
           display: "flex",
@@ -1474,7 +1670,7 @@ export function DashboardPage() {
 
         {/* Feed grouped by source */}
         {!loading && sources.length > 0 && (
-          <div style={{ display: "flex", flexDirection: "column", gap: isCompact ? 24 : 32 }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: isCompact ? 32 : 44 }}>
             {sources.map((source) => {
               const srcArticles = articlesBySource.get(source.id) ?? [];
               return (
@@ -1491,6 +1687,12 @@ export function DashboardPage() {
                   summaryModes={summaryModes}
                   onSummaryModeChange={handleSummaryModeChange}
                   loadingModesByArticle={loadingModesByArticle}
+                  sourceCollapsed={collapsedSources.has(source.id)}
+                  onToggleSourceCollapse={() => setCollapsedSources((prev) => {
+                    const next = new Set(prev);
+                    next.has(source.id) ? next.delete(source.id) : next.add(source.id);
+                    return next;
+                  })}
                 />
               );
             })}

@@ -284,7 +284,6 @@ function SourceRow({
             alt={source.name}
             width={32}
             height={32}
-            crossOrigin="anonymous"
             onError={() => setFaviconErrored(true)}
             style={{ width: "100%", height: "100%", objectFit: "cover" }}
           />
@@ -400,12 +399,19 @@ export function SourcesPage() {
 
       const domain = domainFromUrl(trimmed);
       const name = nameFromDomain(domain);
+      let faviconUrl = `https://www.google.com/s2/favicons?sz=64&domain=${domain}`;
+      let accentColor = DEFAULT_ACCENT;
+      try {
+        const fav = await fetch(`/api/favicon?domain=${domain}`).then((r) => r.json()) as { faviconUrl: string; color: string };
+        faviconUrl = fav.faviconUrl;
+        accentColor = fav.color;
+      } catch {}
       const newSource = {
         id: trimmed,
         name,
         domain,
-        faviconUrl: `https://www.google.com/s2/favicons?sz=64&domain=${domain}`,
-        accentColor: DEFAULT_ACCENT,
+        faviconUrl,
+        accentColor,
         contentProfile: newSourceProfile,
       };
       addSource(newSource);

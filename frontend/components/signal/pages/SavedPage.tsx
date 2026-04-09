@@ -33,6 +33,15 @@ function formatNumber(n: number): string {
   return n.toLocaleString();
 }
 
+function splitShortSummary(summary: string): string[] {
+  return summary
+    .replace(/\r\n?/g, "\n")
+    .replace(/([^\n])\s+(?=(?:[-•*]\s)|(?:\d+\.\s))/g, "$1\n")
+    .split("\n")
+    .map((line) => line.trim().replace(/^[-•*\d.)\s]+/, ""))
+    .filter(Boolean);
+}
+
 // ─── Favicon Bubble ───────────────────────────────────────────────────────────
 
 function FaviconBubble({
@@ -158,6 +167,45 @@ function SummaryModeToggle({
   );
 }
 
+function CompactBulletList({
+  items,
+  accentColor,
+}: {
+  items: string[];
+  accentColor: string;
+}) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+      {items.map((bullet, i) => (
+        <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 9 }}>
+          <span
+            aria-hidden="true"
+            style={{
+              width: 5,
+              height: 5,
+              borderRadius: "50%",
+              backgroundColor: accentColor,
+              opacity: 0.8,
+              flexShrink: 0,
+              marginTop: 6,
+            }}
+          />
+          <span
+            style={{
+              fontSize: 13,
+              color: "var(--sg-text)",
+              opacity: 0.88,
+              lineHeight: 1.6,
+            }}
+          >
+            {bullet}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 // ─── Sort options ─────────────────────────────────────────────────────────────
 
 type SortKey = "newest" | "oldest" | "source";
@@ -197,6 +245,9 @@ function SavedCard({
   }
 
   const activeSummary = getActiveSummary();
+  const shortSummaryLines = summaryMode === "short" && activeSummary
+    ? splitShortSummary(activeSummary)
+    : [];
 
   return (
     <article
@@ -354,17 +405,8 @@ function SavedCard({
           }}
         >
           <div style={{ paddingLeft: 36, marginTop: 10 }}>
-            {summaryMode === "short" && activeSummary ? (
-              <ul style={{ margin: 0, paddingLeft: 16, display: "flex", flexDirection: "column", gap: 5 }}>
-                {activeSummary.split("\n").filter(Boolean).map((bullet, i) => (
-                  <li
-                    key={i}
-                    style={{ fontSize: 13, color: "var(--sg-text)", opacity: 0.88, lineHeight: 1.6, paddingLeft: 2 }}
-                  >
-                    {bullet.replace(/^[-•]\s*/, "")}
-                  </li>
-                ))}
-              </ul>
+            {summaryMode === "short" && shortSummaryLines.length > 0 ? (
+              <CompactBulletList items={shortSummaryLines} accentColor={accent} />
             ) : activeSummary ? (
               <p style={{ fontSize: 13, color: "var(--sg-text)", opacity: 0.88, lineHeight: 1.68, margin: 0 }}>
                 {activeSummary}

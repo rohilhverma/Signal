@@ -12,6 +12,7 @@ export interface Source {
   domain: string;
   faviconUrl: string;
   accentColor: string;
+  paywall?: string | null;
 }
 
 export type SummaryMode = "short" | "default" | "deepDive";
