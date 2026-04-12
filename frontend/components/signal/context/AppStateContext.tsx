@@ -6,11 +6,13 @@ import {
   useReducer,
   ReactNode,
   useCallback,
+  useEffect,
 } from "react";
 import {
   type Source,
   type Article,
   type SummaryMode,
+  DEFAULT_ACCENT,
 } from "../data/mockArticles";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -42,7 +44,9 @@ type AppAction =
   | { type: "REMOVE_SOURCE"; payload: string }
   | { type: "SET_SOURCE_PROFILE"; payload: { sourceId: string; profile: ContentProfile } }
   | { type: "SET_ARTICLES"; payload: Article[] }
-  | { type: "TOGGLE_BOOKMARK"; payload: { article: Article; source: Source; summaryMode: SummaryMode } }
+  | { type: "SET_BOOKMARKS"; payload: BookmarkedArticle[] }
+  | { type: "UPSERT_BOOKMARK"; payload: BookmarkedArticle }
+  | { type: "REMOVE_BOOKMARK"; payload: string }
   | { type: "UPDATE_ARTICLE_SUMMARY"; payload: { articleId: string; mode: SummaryMode; text: string } }
   | { type: "PATCH_ARTICLE_SUMMARY"; payload: { articleId: string; mode: SummaryMode; text: string } };
 
@@ -58,7 +62,13 @@ function appReducer(state: AppState, action: AppAction): AppState {
         contentProfile: (action.payload as ManagedSource).contentProfile ?? "standard",
         articleCount: 0,
       };
-      return { ...state, sources: [...state.sources, newSource] };
+      return {
+        ...state,
+        sources: [...state.sources, newSource],
+        bookmarks: state.bookmarks.map((b) =>
+          b.source.id === newSource.id ? { ...b, source: newSource } : b
+        ),
+      };
     }
 
     case "REMOVE_SOURCE": {
@@ -81,26 +91,68 @@ function appReducer(state: AppState, action: AppAction): AppState {
       };
     }
 
-    case "TOGGLE_BOOKMARK": {
-      const { article, source, summaryMode } = action.payload;
-      const exists = state.bookmarks.find((b) => b.article.id === article.id);
+    case "UPSERT_BOOKMARK": {
+      const incoming = action.payload;
+      const exists = state.bookmarks.find((b) => b.article.id === incoming.article.id);
       if (exists) {
         return {
           ...state,
-          bookmarks: state.bookmarks.filter((b) => b.article.id !== article.id),
+          bookmarks: state.bookmarks.map((bookmark) =>
+            bookmark.article.id === incoming.article.id ? incoming : bookmark
+          ),
         };
       }
       return {
         ...state,
         bookmarks: [
-          { article, source, savedAt: new Date(), summaryMode },
+          incoming,
           ...state.bookmarks,
         ],
       };
     }
 
+    case "REMOVE_BOOKMARK": {
+      return {
+        ...state,
+        bookmarks: state.bookmarks.filter((bookmark) => bookmark.article.id !== action.payload),
+      };
+    }
+
     case "SET_ARTICLES": {
-      return { ...state, articles: action.payload };
+      const articlesById = new Map(action.payload.map((article) => [article.id, article]));
+      return {
+        ...state,
+        articles: action.payload,
+        bookmarks: state.bookmarks.map((bookmark) => {
+          const hydratedArticle = articlesById.get(bookmark.article.id);
+          if (!hydratedArticle) return bookmark;
+          const hydratedSource = state.sources.find((source) => source.id === hydratedArticle.sourceId) ?? bookmark.source;
+          return {
+            ...bookmark,
+            article: hydratedArticle,
+            source: hydratedSource,
+          };
+        }),
+      };
+    }
+
+    case "SET_BOOKMARKS": {
+      const existingById = new Map(state.bookmarks.map((bookmark) => [bookmark.article.id, bookmark]));
+      const merged = action.payload.map((bookmark) => {
+        const existing = existingById.get(bookmark.article.id);
+        return existing
+          ? {
+              ...bookmark,
+              article: existing.article,
+              source: existing.source,
+              savedAt: existing.savedAt,
+              summaryMode: existing.summaryMode,
+            }
+          : bookmark;
+      });
+      const incomingIds = new Set(action.payload.map((bookmark) => bookmark.article.id));
+      const localOnly = state.bookmarks.filter((bookmark) => !incomingIds.has(bookmark.article.id));
+      return { ...state, bookmarks: [...merged, ...localOnly] };
     }
 
     case "PATCH_ARTICLE_SUMMARY": {
@@ -158,12 +210,67 @@ interface AppStateContextValue {
   setSourceProfile: (sourceId: string, profile: ContentProfile) => void;
   setArticles: (articles: Article[]) => void;
   patchArticleSummary: (articleId: string, mode: SummaryMode, text: string) => void;
-  toggleBookmark: (article: Article, source: Source, summaryMode: SummaryMode) => void;
+  saveBookmark: (article: Article, source: Source, summaryMode: SummaryMode) => Promise<boolean>;
+  removeBookmark: (articleLink: string) => Promise<boolean>;
   isBookmarked: (articleId: string) => boolean;
   updateArticleSummary: (articleId: string, mode: SummaryMode, text: string) => void;
 }
 
 const AppStateContext = createContext<AppStateContextValue | null>(null);
+
+function createFallbackSource(articleLink: string): Source {
+  try {
+    const url = new URL(articleLink);
+    const hostname = url.hostname.replace(/^www\./, "");
+    return {
+      id: url.origin,
+      name: hostname.split(".")[0].replace(/^\w/, (char) => char.toUpperCase()),
+      domain: hostname,
+      faviconUrl: `https://www.google.com/s2/favicons?sz=64&domain=${hostname}`,
+      accentColor: DEFAULT_ACCENT,
+    };
+  } catch {
+    return {
+      id: articleLink,
+      name: "Saved Article",
+      domain: articleLink,
+      faviconUrl: "",
+      accentColor: DEFAULT_ACCENT,
+    };
+  }
+}
+
+function createFallbackBookmark(articleTitle: string, articleLink: string): BookmarkedArticle {
+  const source = createFallbackSource(articleLink);
+  const summaryDefault = "Saved article. Open the original link to read it.";
+
+  return {
+    article: {
+      id: articleLink,
+      sourceId: source.id,
+      title: articleTitle,
+      url: articleLink,
+      summaryShort: null,
+      summaryDefault,
+      summaryDeepDive: null,
+      publishedAt: new Date(),
+      originalWordCount: 0,
+      summaryWordCount: summaryDefault.split(/\s+/).filter(Boolean).length,
+    },
+    source,
+    savedAt: new Date(),
+    summaryMode: "default",
+  };
+}
+
+function createBookmark(article: Article, source: Source, summaryMode: SummaryMode): BookmarkedArticle {
+  return {
+    article,
+    source,
+    savedAt: new Date(),
+    summaryMode,
+  };
+}
 
 export function AppStateProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(appReducer, initialState);
@@ -181,9 +288,55 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       dispatch({ type: "SET_SOURCE_PROFILE", payload: { sourceId, profile } }),
     []
   );
-  const toggleBookmark = useCallback(
-    (article: Article, source: Source, summaryMode: SummaryMode) =>
-      dispatch({ type: "TOGGLE_BOOKMARK", payload: { article, source, summaryMode } }),
+  const saveBookmark = useCallback(
+    async (article: Article, source: Source, summaryMode: SummaryMode) => {
+      try {
+        const res = await fetch("/api/user/saved/articles", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            username: "rohil",
+            articleLink: article.url,
+            articleTitle: article.title,
+          }),
+        });
+
+        if (!res.ok) {
+          return false;
+        }
+
+        dispatch({ type: "UPSERT_BOOKMARK", payload: createBookmark(article, source, summaryMode) });
+        return true;
+      } catch (error) {
+        console.error("Failed to save article:", error);
+        return false;
+      }
+    },
+    []
+  );
+  const removeBookmark = useCallback(
+    async (articleLink: string) => {
+      try {
+        const res = await fetch("/api/user/saved/articles", {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            username: "rohil",
+            articleLink,
+          }),
+        });
+
+        if (!res.ok) {
+          return false;
+        }
+
+        dispatch({ type: "REMOVE_BOOKMARK", payload: articleLink });
+        return true;
+      } catch (error) {
+        console.error("Failed to remove saved article:", error);
+        return false;
+      }
+    },
     []
   );
   const isBookmarked = useCallback(
@@ -205,6 +358,34 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     []
   );
 
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadSavedArticles() {
+      try {
+        const res = await fetch("/api/user/saved/articles?username=rohil");
+        if (!res.ok) return;
+
+        const savedArticles = await res.json() as Record<string, string>;
+        if (cancelled) return;
+
+        const bookmarks = Object.entries(savedArticles).map(([articleTitle, articleLink]) =>
+          createFallbackBookmark(articleTitle, articleLink)
+        );
+
+        dispatch({ type: "SET_BOOKMARKS", payload: bookmarks });
+      } catch (error) {
+        console.error("Failed to load saved articles:", error);
+      }
+    }
+
+    loadSavedArticles();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   return (
     <AppStateContext.Provider
       value={{
@@ -214,7 +395,8 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         setSourceProfile,
         setArticles,
         patchArticleSummary,
-        toggleBookmark,
+        saveBookmark,
+        removeBookmark,
         isBookmarked,
         updateArticleSummary,
       }}

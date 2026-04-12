@@ -5,8 +5,6 @@ import {
   Bookmark,
   BookmarkX,
   ExternalLink,
-  ChevronDown,
-  ChevronUp,
   Loader2,
 } from "lucide-react";
 import { useAppState, type BookmarkedArticle } from "../context/AppStateContext";
@@ -227,7 +225,6 @@ function SavedCard({
 }) {
   const { article, source } = bookmark;
   const accent = source.accentColor ?? DEFAULT_ACCENT;
-  const [expanded, setExpanded] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [summaryMode, setSummaryMode] = useState<SummaryMode>(bookmark.summaryMode ?? "default");
   const [loadingModes] = useState<Set<SummaryMode>>(new Set());
@@ -358,85 +355,31 @@ function SavedCard({
               />
             </button>
 
-            <button
-              onClick={() => setExpanded((v) => !v)}
-              aria-label={expanded ? "Collapse summary" : "Expand summary"}
-              style={{
-                background: "none",
-                border: "none",
-                padding: 5,
-                cursor: "pointer",
-                color: "var(--sg-muted)",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                borderRadius: 5,
-                transition: "background-color 0.15s ease",
-              }}
-              onMouseEnter={(e) => ((e.currentTarget as HTMLElement).style.backgroundColor = "var(--sg-nav-hover)")}
-              onMouseLeave={(e) => ((e.currentTarget as HTMLElement).style.backgroundColor = "transparent")}
-            >
-              {expanded
-                ? <ChevronUp style={{ width: 14, height: 14 }} />
-                : <ChevronDown style={{ width: 14, height: 14 }} />}
-            </button>
           </div>
         </div>
 
-        {/* Summary mode toggle (only when expanded) */}
-        {expanded && (
-          <div style={{ paddingLeft: 36, marginTop: 10 }}>
-            <SummaryModeToggle
-              activeMode={summaryMode}
-              onSelect={setSummaryMode}
-              accentColor={accent}
-              loadingModes={loadingModes}
-            />
-          </div>
-        )}
-
-        {/* Expanded summary */}
-        <div
-          style={{
-            overflow: "hidden",
-            maxHeight: expanded ? 600 : 0,
-            opacity: expanded ? 1 : 0,
-            transition: "max-height 0.28s ease, opacity 0.2s ease",
-          }}
-        >
-          <div style={{ paddingLeft: 36, marginTop: 10 }}>
-            {summaryMode === "short" && shortSummaryLines.length > 0 ? (
-              <CompactBulletList items={shortSummaryLines} accentColor={accent} />
-            ) : activeSummary ? (
-              <p style={{ fontSize: 13, color: "var(--sg-text)", opacity: 0.88, lineHeight: 1.68, margin: 0 }}>
-                {activeSummary}
-              </p>
-            ) : (
-              <p style={{ fontSize: 12.5, color: "var(--sg-muted)", fontStyle: "italic" }}>
-                Summary not available for this mode.
-              </p>
-            )}
-          </div>
+        <div style={{ paddingLeft: 36, marginTop: 10 }}>
+          <SummaryModeToggle
+            activeMode={summaryMode}
+            onSelect={setSummaryMode}
+            accentColor={accent}
+            loadingModes={loadingModes}
+          />
         </div>
 
-        {/* Collapsed preview */}
-        {!expanded && (
-          <p
-            style={{
-              fontSize: 12.5,
-              color: "var(--sg-muted)",
-              lineHeight: 1.6,
-              marginTop: 6,
-              paddingLeft: 36,
-              display: "-webkit-box",
-              WebkitLineClamp: 2,
-              WebkitBoxOrient: "vertical",
-              overflow: "hidden",
-            }}
-          >
-            {article.summaryDefault}
-          </p>
-        )}
+        <div style={{ paddingLeft: 36, marginTop: 10 }}>
+          {summaryMode === "short" && shortSummaryLines.length > 0 ? (
+            <CompactBulletList items={shortSummaryLines} accentColor={accent} />
+          ) : activeSummary ? (
+            <p style={{ fontSize: 13, color: "var(--sg-text)", opacity: 0.88, lineHeight: 1.68, margin: 0 }}>
+              {activeSummary}
+            </p>
+          ) : (
+            <p style={{ fontSize: 12.5, color: "var(--sg-muted)", fontStyle: "italic", margin: 0 }}>
+              Summary not available for this mode.
+            </p>
+          )}
+        </div>
 
         {/* Footer */}
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 10, paddingLeft: 36 }}>
@@ -471,7 +414,7 @@ function SavedCard({
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export function SavedPage() {
-  const { state, toggleBookmark } = useAppState();
+  const { state, removeBookmark } = useAppState();
   const { showToast } = useToast();
   const { density } = usePreferences();
   const isCompact = density === "compact";
@@ -485,11 +428,15 @@ export function SavedPage() {
   }, [state.bookmarks, sortKey]);
 
   const handleUnbookmark = useCallback(
-    (bm: BookmarkedArticle) => {
-      toggleBookmark(bm.article, bm.source, bm.summaryMode);
-      showToast(`Removed "${bm.article.title.slice(0, 40)}…"`, "info");
+    async (bm: BookmarkedArticle) => {
+      const removed = await removeBookmark(bm.article.url);
+      if (removed) {
+        showToast(`Removed "${bm.article.title.slice(0, 40)}…"`, "info");
+      } else {
+        showToast("Failed to remove saved article", "error");
+      }
     },
-    [toggleBookmark, showToast]
+    [removeBookmark, showToast]
   );
 
   const isEmpty = state.bookmarks.length === 0;

@@ -4,7 +4,6 @@ public class UserRequest {
     private String username;
     private String email;
     private String websiteURL;
-    private String contentMode;
     private String websiteContentMode;
 
     public String getUsername() { return username; }
@@ -16,9 +15,15 @@ public class UserRequest {
     public String getWebsiteURL() { return websiteURL; }
     public void setWebsiteURL(String websiteURL) { this.websiteURL = websiteURL; }
 
-    public String getContentMode() { return contentMode; }
-    public void setContentMode(String contentMode) { this.contentMode = contentMode; }
-
     public String getWebsiteContentMode() { return websiteContentMode; }
     public void setWebsiteContentMode(String websiteContentMode) { this.websiteContentMode = websiteContentMode; }
+
+    private String articleLink;
+    private String articleTitle;
+
+    public String getArticleLink() { return articleLink; }
+    public void setArticleLink(String articleLink) { this.articleLink = articleLink; }
+
+    public String getArticleTitle() { return articleTitle; }
+    public void setArticleTitle(String articleTitle) { this.articleTitle = articleTitle; }
 }

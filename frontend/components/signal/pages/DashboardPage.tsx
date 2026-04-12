@@ -1197,7 +1197,7 @@ type ArticleSummaryCache = Map<string, Partial<Record<SummaryMode, string>>>;
 export function DashboardPage() {
   const navigate = useNavigate();
   const { density, viewMode } = usePreferences();
-  const { state: appState, toggleBookmark: ctxToggleBookmark, isBookmarked, addSource, setArticles, patchArticleSummary: patchArticle } = useAppState();
+  const { state: appState, saveBookmark, removeBookmark, isBookmarked, addSource, setArticles, patchArticleSummary: patchArticle } = useAppState();
   const { showToast } = useToast();
 
   const [loading, setLoading] = useState(appState.sources.length === 0);
@@ -1419,14 +1419,25 @@ export function DashboardPage() {
     });
   }
 
-  function toggleBookmark(id: string) {
+  async function toggleBookmark(id: string) {
     const article = articles.find((a) => a.id === id);
     const source = sources.find((s) => s.id === article?.sourceId);
     if (!article || !source) return;
+    const alreadyBookmarked = isBookmarked(id);
+    if (alreadyBookmarked) {
+      const removed = await removeBookmark(article.url);
+      if (!removed) {
+        showToast("Failed to remove saved article", "error");
+      }
+      return;
+    }
+
     const mode = summaryModes.get(id) ?? "default";
-    ctxToggleBookmark(article, source, mode);
-    if (!isBookmarked(id)) {
+    const saved = await saveBookmark(article, source, mode);
+    if (saved) {
       showToast("Article saved", "success");
+    } else {
+      showToast("Failed to save article", "error");
     }
   }
 

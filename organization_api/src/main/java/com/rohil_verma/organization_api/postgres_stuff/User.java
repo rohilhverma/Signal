@@ -1,8 +1,8 @@
 package com.rohil_verma.organization_api.postgres_stuff;
 
 import java.time.LocalTime;
-import java.util.ArrayList;
-import java.util.List;
+import java.util.HashMap;
+import java.util.Map;
 
 import jakarta.persistence.CascadeType;
 import jakarta.persistence.Column;
@@ -10,6 +10,7 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.MapKey;
 import jakarta.persistence.OneToMany;
 import jakarta.persistence.Table;
 
@@ -19,7 +20,6 @@ public class User {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
-
     private Integer id;
 
     @Column(unique = true, nullable = false)
@@ -31,12 +31,15 @@ public class User {
 
     private LocalTime userUpdateTime;
     
-    private String contentMode;
-
     private String keywords;
 
     @OneToMany(mappedBy = "user", cascade = CascadeType.ALL, orphanRemoval = true)
-    private List<Subscription> subscriptions = new ArrayList<>();
+    @MapKey(name = "websiteURL")
+    private Map<String, Subscription> subscriptions = new HashMap<>();
+
+    @OneToMany(mappedBy="user",cascade=CascadeType.ALL,orphanRemoval = true)
+    @MapKey(name = "articleLink")
+    private Map<String, SavedArticles> usersSavedArticles = new HashMap<>();
 
     public User() {}
 
@@ -50,7 +53,15 @@ public class User {
         sub.setWebsiteURL(websiteURL);
         sub.setContentMode(contentMode);
         sub.setUser(this);
-        subscriptions.add(sub);
+        subscriptions.put(websiteURL, sub);
+    }
+
+    public void removeSubscriptions(String websiteURL){
+        subscriptions.remove(websiteURL);
+    }
+
+    public Map<String,SavedArticles> listSubscriptions(){
+        return usersSavedArticles;
     }
 
     public Integer getId() { return id; }
@@ -68,16 +79,27 @@ public class User {
     public LocalTime getUserUpdateTime() { return userUpdateTime; }
     public void setUserUpdateTime(LocalTime userUpdateTime) { this.userUpdateTime = userUpdateTime; }
 
-    public String getContentMode() { return contentMode; }
-    public void setContentMode(String contentMode) { this.contentMode = contentMode; }
-
-    public List<Subscription> getSubscriptions() { return subscriptions; }
-    public void setSubscriptions(List<Subscription> subscriptions) { this.subscriptions = subscriptions; }
+    public Map<String, Subscription> getSubscriptions() { return subscriptions; }
+    public void setSubscriptions(Map<String, Subscription> subscriptions) { this.subscriptions = subscriptions; }
 
     public String getKeywords(){return keywords;}
 
     public void setKeywords(String keywords){this.keywords = keywords;}
 
+    public Map<String,SavedArticles> getSavedArticles() { return usersSavedArticles; }
+    public void setUsersSavedArticles(Map<String,SavedArticles> usersSavedArticles) { this.usersSavedArticles = usersSavedArticles; }
+
+    public void addArticleForUser(String articleURL, String articleTitle){
+        SavedArticles savedArticle = new SavedArticles();
+        savedArticle.setArticleLink(articleURL);
+        savedArticle.setArticleTitle(articleTitle);
+        savedArticle.setUser(this);
+        usersSavedArticles.put(articleURL, savedArticle);
+    }
+
+    public void removeArticleForUser(String articleURL){
+        usersSavedArticles.remove(articleURL);
+    } 
     @Override
     public String toString() {
         return "User [id=" + id + ", username=" + username + ", email=" + email + "]";

@@ -24,10 +24,9 @@ public class GeminiModel {
         chatClient = Client.builder().apiKey(geminiAPIKey).build();
     }
 
-    public String handleResummarize(String prompt, String articleText) {
+    public String handleResummarize(String mode, String prompt, String articleText) {
         try {
-            String model = "gemini-2.5-flash-lite";
-            if (prompt == "longer"){model="gemini-2.5-flash";}
+            String model = mode.equals("longer") ? "gemini-2.5-flash" : "gemini-2.5-flash-lite";
             GenerateContentConfig config = GenerateContentConfig.builder()
                 .responseMimeType("application/json")
                 .systemInstruction(Content.fromParts(Part.fromText(prompt)))

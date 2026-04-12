@@ -1,6 +1,9 @@
 package com.rohil_verma.organization_api.postgres_stuff;
 
 import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
@@ -24,9 +27,7 @@ public class LinksService {
 
     public List<String> getWebsitesForUser(String username) {
         return userRepository.findByUsername(username)
-            .map(user -> user.getSubscriptions().stream()
-                .map(Subscription::getWebsiteURL)
-                .toList())
+            .map(user -> user.getSubscriptions().keySet().stream().toList())
             .orElse(List.of());
     }
 
@@ -36,6 +37,7 @@ public class LinksService {
             .distinct()
             .toList();
     }
+
 
     public ResponseEntity<String> addWebsiteForUser(String username,  String websiteURL,String contentMode){
         try {
@@ -50,9 +52,7 @@ public class LinksService {
             .map(user -> new UserInformationDTO(
                 user.getEmail(),
                 user.getUsername(),
-                user.getSubscriptions().stream()
-                    .map(Subscription::getWebsiteURL)
-                    .toList()))
+                user.getSubscriptions().keySet().stream().toList()))
             .orElse(new UserInformationDTO(null, null, null));
     }
 
@@ -66,30 +66,26 @@ public class LinksService {
     }
 
     public void deleteWebsiteForUser(String username, String websiteURL) {
-        userRepository.findByUsername(username).ifPresent(user ->
-            subscriptionRepository.deleteByUserAndWebsiteURL(user, websiteURL));
+        userRepository.findByUsername(username).ifPresent(user -> {
+            user.getSubscriptions().remove(websiteURL);
+            userRepository.save(user);
+        });
     }
 
     public ResponseEntity<String> addUser(String username, String email, String websiteURL,
-                                          String contentMode, String websiteContentMode) {
+                                          String websiteContentMode) {
         try {
             User user = userRepository.findByUsername(username).orElseGet(() -> {
                 User newUser = new User(username, email);
                 return userRepository.save(newUser);
             });
-            if (contentMode != null) {
-                user.setContentMode(contentMode);
-            }
-            String broadProfile = user.getContentMode();
-            if (broadProfile == null && websiteContentMode == null) {
+            if (websiteContentMode == null) {
                 return ResponseEntity.badRequest()
-                    .body("Either a broad content profile or a website content profile is required");
+                    .body("A website content mode is required");
             }
             user.addSubscription(websiteURL, websiteContentMode);
             userRepository.save(user);
-            List<String> websites = user.getSubscriptions().stream()
-                .map(Subscription::getWebsiteURL)
-                .toList();
+            List<String> websites = user.getSubscriptions().keySet().stream().toList();
             messageSender.sendScrapingTaskToWorkers(username, websites);
             return ResponseEntity.ok("User Saved");
         } catch (Exception e) {
@@ -97,6 +93,15 @@ public class LinksService {
         }
     }
 
+    public Map<String, String> userSavedArticles(String username) {
+        return userRepository.findByUsername(username)
+            .map(user -> user.getSavedArticles().values().stream()
+                .collect(Collectors.toMap(
+                    SavedArticles::getArticleTitle,
+                    SavedArticles::getArticleLink
+                )))
+            .orElse(Map.of());
+    }
 
 
     public ResponseEntity<String> sendScrapingTask(String username) {
@@ -110,4 +115,27 @@ public class LinksService {
             return ResponseEntity.status(500).body("Failed to Send Scraping Task");
         }
     }
+
+    public ResponseEntity<String> addArticleForUser(String username, String articleLink, String articleTitle) {
+        try {
+            User user = userRepository.findByUsername(username).orElseThrow();
+            user.addArticleForUser(articleLink, articleTitle);
+            userRepository.save(user);
+            return ResponseEntity.ok("Article saved");
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body("Failed to save article");
+        }
+    }
+
+    public ResponseEntity<String> removeArticleForUser(String username, String articleURL){
+        try {
+            User user = userRepository.findByUsername(username).orElseThrow();
+            user.removeArticleForUser(articleURL);
+            userRepository.save(user);
+            return ResponseEntity.ok("Article removed");
+        } catch(Exception e){return ResponseEntity.status(500).body("Failed to remove article");
+}
+    }
+
+    
 }

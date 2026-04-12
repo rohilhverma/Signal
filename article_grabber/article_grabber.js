@@ -16,31 +16,66 @@ const cutoff = new Date(present.getTime() - (36 * 60 * 60 * 1000))
 const prompts={
     "shorter" : "You are a news wire editor. Summarize each article in 2-3 bullet points. Each bullet must be one sentence, maximum 20 words. Bullet 1: What happened — the core event, stated as a fact. Bullet 2: Who is involved and what specifically they did. Bullet 3 (only if needed): A key number or outcome that adds value. Rules: No filler phrases like \"it's worth noting\" or \"according to\"; No background or history unless critical to understanding the event; If a bullet doesn't add new information, cut it; Start each bullet with the subject, not a verb. Return ONLY a valid JSON array. Do not wrap in markdown backticks or code blocks, only use objects containing \"title\" and \"summary\".",
     "default" : "You are a news briefing editor. For each article, write a single paragraph summary of 4-6 sentences. Each summary must include: 1. The core event — what happened, stated directly; 2. Context — how this connects to related events or industry trends; 3. Implication — what this signals or why it matters going forward; 4. Key specifics — include relevant numbers, names, and concrete details. Write in a flowing paragraph, not bullet points. Do not use filler phrases. State facts directly with no editorializing. Return ONLY a valid JSON array. Do not wrap in markdown backticks or code blocks, only use objects containing \"title\" and \"summary\".",
-    "longer": "You are a senior analyst writing intelligence briefings. For each article, write a detailed analysis following this exact structure:\n\n[PARAGRAPH 1 - THE EVENT]\nWhat happened, who was involved, and the concrete specifics. Include all relevant numbers, names, dates, and technical details found in the article. Leave nothing important out. End this paragraph, then start a new one.\n\n[PARAGRAPH 2 - THE CONTEXT] (only if the article provides it)\nUsing ONLY information found within the article, explain how this event connects to related developments, competing efforts, or previous events that the article mentions. Do not reference any information outside of the provided text. If the article does not provide broader context, skip this paragraph entirely.\n\n[PARAGRAPH 3 - THE IMPLICATIONS] (only if the article supports it)\nBased ONLY on what the article states or directly implies, what does this signal going forward? Do not speculate beyond what the text supports. If the article does not discuss implications, skip this paragraph entirely.\n\nRules:\n- Each paragraph MUST be separated by a blank line\n- Never combine multiple sections into one paragraph\n- Include specific numbers, names, and data points\n- Draw connections ONLY between details within the article\n- No filler phrases or editorializing\n- Never introduce outside knowledge\n- Every sentence must be traceable to the article text\n\nReturn ONLY a valid JSON array. Do not wrap in markdown backticks or code blocks, only use objects containing \"title\" and \"summary\"."
+    "longer": "You are a senior analyst writing intelligence briefings. For each article, you MUST write exactly 3 paragraphs separated by blank lines. No more, no fewer.\n\nParagraph 1 — What happened: who was involved, concrete specifics, relevant numbers, names, dates, and technical details from the article.\n\nParagraph 2 — Context: how this event connects to related developments, competing efforts, or previous events. Draw only from information within the article. If the article provides little context, connect the facts and details stated in paragraph 1.\n\nParagraph 3 — Implications: what this signals going forward, based only on what the article states or directly implies. If implications are not explicit, derive them logically from the facts in paragraph 1.\n\nRules:\n- Output MUST be exactly 3 paragraphs separated by blank lines\n- No labels, headers, or markers before paragraphs\n- No filler phrases or editorializing\n- Never introduce outside knowledge\n- Every sentence must be traceable to the article text\n\nReturn ONLY a valid JSON array. Do not wrap in markdown backticks or code blocks, only use objects containing \"title\" and \"summary\"."
 }
 const promptIndex={"shorter":0,"default":1,"longer":2}
 const nonTechPatterns = [
-    /\bbest deals?\b/i,
-    /\bdeals? to shop\b/i,
-    /\bdeal\b/i,
-    /\bbig spring sale\b/i,
+    // --- deal / sale keywords ---
+    /\bdeals?\b/i,
+    /\bon sale\b/i,
+    /\b(flash|big|huge|summer|winter|spring|fall|holiday|seasonal|mega|clearance) sale\b/i,
+    /\bsale (alert|ends?|event|extravaganza)\b/i,
+    /\bdiscount(s|ed)?\b/i,
+    /\bclearance\b/i,
+    /\brebate\b/i,
+    /\bsavings?\b/i,
+    /\bmarkdown\b/i,
+    /\bsteals?\b/i,
+    /\bcoupon\b/i,
+    /\bpromo code\b/i,
+    /\bprice drop\b/i,
+    /\bprice cut\b/i,
     /\bprime day\b/i,
     /\bblack friday\b/i,
     /\bcyber monday\b/i,
     /\bgift guide\b/i,
     /\bgift ideas?\b/i,
     /\bshopping guide\b/i,
-    /\bdiscount(s|ed)?\b/i,
-    /\bcoupon\b/i,
-    /\bpromo code\b/i,
-    /\bprice drop\b/i,
-    /\bprice cut\b/i,
     /\bhow to save\b/i,
-    /\bbest .{0,40} to buy\b/i,
     /\bunder \$\d+\b/i,
-    /\bon sale\b/i,
     /\blast chance\b/i,
     /\blimited time\b/i,
+    // --- shopping roundups / listicles ---
+    /^best\b/i,
+    /^the best\b/i,
+    /^(the )?\d+\s+best\b/i,
+    /\bbest .{0,60} (of|for|in|under) \b/i,
+    /\btop \d+\b/i,
+    /\b\d+ (best|top|great|cheap|affordable)\b/i,
+    /\bwe (tested|tried|reviewed|ranked|compared)\b/i,
+    /\b(buying|shoppers?'?) guide\b/i,
+    /\b(our|editor'?s?) (picks?|choice|favorites?|recommendations?)\b/i,
+    /\bshould you (buy|upgrade|get)\b/i,
+    /\bworth (buying|it|the (money|upgrade))\b/i,
+    /\bvs\.? .{0,40}: which\b/i,
+    /\b(cheapest|most affordable|best value)\b/i,
+    /\bright now\b/i,
+]
+
+const podcastPatterns = [
+    /\bon this episode\b/i,
+    /\bin this episode\b/i,
+    /\blisten to (the |this )?(full )?episode\b/i,
+    /\bthis week('s)? episode\b/i,
+    /\bsubscribe (wherever|on) (you get|apple|spotify|google)/i,
+    /\bavailable on (apple podcasts?|spotify|google podcasts?|stitcher)\b/i,
+    /\bfollow (us |the show )?on (apple podcasts?|spotify)\b/i,
+    /\bpodcast transcript\b/i,
+    /\bepisode transcript\b/i,
+    /\bshow notes\b/i,
+    /\bjoin (us|me) (as|for|while)\b/i,
+    /\bour guest (today|this week|this episode)\b/i,
+    /\bthis episode('s| is about| features| covers)\b/i,
 ]
 
 const paywallIndicators = [
@@ -164,6 +199,19 @@ const formats = {
     }
 };
 
+function decodeHtmlEntities(str) {
+    return str
+        .replace(/&#(\d+);/g, (_, dec) => String.fromCharCode(Number(dec)))
+        .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)))
+        .replace(/&amp;/g, '&')
+        .replace(/&lt;/g, '<')
+        .replace(/&gt;/g, '>')
+        .replace(/&quot;/g, '"')
+        .replace(/&apos;/g, "'")
+        .replace(/&nbsp;/g, ' ')
+        .trim()
+}
+
 const axiosConfig = {
     headers: {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
@@ -203,7 +251,7 @@ async function initialScraper(url,mode="default") {
         const homeResp = await axios.get(cleanURL.origin, axiosConfig)
         const $home = cheerio.load(homeResp.data)
         webName = $home('meta[property="og:site_name"]').attr('content')?.trim() || null
-    } catch(e) { /* homepage fetch failed, fall through */ }
+    } catch(e) {}
     if (!webName) webName = $(formats[format].websiteTitle).text().trim() || cleanURL.hostname.replace('www.', '')
     await dynamo.send(new UpdateCommand({
         TableName: TABLE,
@@ -235,7 +283,7 @@ async function initialScraper(url,mode="default") {
         }
         const articleDate = new Date(date)
         console.log(articleDate)
-        const title = $(element).find(formats[format].title).text()
+        const title = decodeHtmlEntities($(element).find(formats[format].title).text())
         if (articleDate < cutoff){console.log(`${title}: Too old, Skipping`); continue}
         if (nonTechPatterns.some(p => p.test(title))){console.log(`${title}: Non-tech, Skipping`); continue}
         let link = $(element).find('link').text()
@@ -246,15 +294,25 @@ async function initialScraper(url,mode="default") {
         if (parsedLink.protocol !== 'http:' && parsedLink.protocol !== 'https:') { console.log(`Non-http URL, skipping: ${link}`); continue }
         if (/^\/(gallery|review|reviews|guide|collection|buying-guide|roundup)\//i.test(parsedLink.pathname)) { console.log(`Product guide URL, skipping: ${link}`); continue }
         const articleTextAndTime = await scrapeArticles(link)
-        if (articleTextAndTime.paywallStatus) {
-            console.log(`Paywall article, GUID saved but skipping DB write: ${link}`)
-            await dbGUID(guid)
-            paywallCount+=1
+        const textLen = articleTextAndTime.articleText?.trim().length ?? 0
+        const minChars = articleTextAndTime.paywallStatus ? 1500 : 500
+        if (!articleTextAndTime.articleText || textLen < minChars) {
+            if (articleTextAndTime.paywallStatus) {
+                console.log(`Paywall article with insufficient text (${textLen} chars), GUID saved: ${link}`)
+                await dbGUID(guid)
+                paywallCount+=1
+            } else {
+                console.log(`Empty or too-short article text, skipping entirely: ${link}`)
+            }
             continue
         }
-        if (!articleTextAndTime.articleText || articleTextAndTime.articleText.trim().length < 100) {
-            console.log(`Empty or too-short article text, skipping entirely: ${link}`)
+        if (podcastPatterns.some(p => p.test(articleTextAndTime.articleText))) {
+            console.log(`${title}: Podcast content, skipping`)
             continue
+        }
+        if (articleTextAndTime.paywallStatus) {
+            paywallCount+=1
+            console.log(`Paywall article saved with flag (${textLen} chars): ${link}`)
         }
         const articleContent = {
             websiteName:url,
@@ -263,7 +321,7 @@ async function initialScraper(url,mode="default") {
             title_:title,
             articleText: articleTextAndTime.articleText,
             date:articleTextAndTime.publishDate,
-            paywall: false
+            paywall: articleTextAndTime.paywallStatus
         }
         scrapedCount+=1
         console.log(articleContent)
@@ -288,7 +346,7 @@ async function initialScraper(url,mode="default") {
         try {
             const geminiStart = Date.now()
             const x = await ai.models.generateContent({
-                model:"gemini-2.5-flash-lite",
+                model:"gemini-2.5-flash",
                 config: {systemInstruction: prompts[mode],
                     responseMimeType:"application/json",
                     responseSchema: {
@@ -367,7 +425,7 @@ async function scrapeArticles(url, format) {
         const paywallByPhrase = paywallPhrases.some(p => p.test(articleBodyText))
         if(paywallBySelector || paywallByPhrase){
             console.log(`Paywall Detected! (${paywallBySelector ? 'selector' : 'phrase'})`)
-            return {articleText: null, publishDate: null, paywallStatus: true}
+            paywallStatus = true
         }
         $(
         '.c-entry-sidebar, ' +      
@@ -480,4 +538,4 @@ async function javascriptHTMLScraper(url){
     }
 }
 
-// initialScraper("https://wired.com")
+// initialScraper("https://theverge.com")

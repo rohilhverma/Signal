@@ -21,6 +21,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 @CrossOrigin(origins = "http://localhost:3000")
 public class LinksController {
 
+
     @Autowired
     private DynamoService dynamoService;
 
@@ -41,7 +42,7 @@ public class LinksController {
     @PostMapping("/user")
     public ResponseEntity<String> AddUser(@RequestBody UserRequest request) {
         return linksService.addUser(request.getUsername(), request.getEmail(), request.getWebsiteURL(),
-            request.getContentMode(), request.getWebsiteContentMode());
+            request.getWebsiteContentMode());
     }
 
     @GetMapping("/user/info")
@@ -74,7 +75,7 @@ public class LinksController {
     @PostMapping("/user/website")
     public ResponseEntity<String> addWebsiteForUser(@RequestBody UserRequest request) {
         ResponseEntity<String> response= linksService.addWebsiteForUser(request.getUsername(), request.getWebsiteURL(), request.getWebsiteContentMode());
-        System.out.println(response + "\n\n" + request.getUsername() + "\n" + request.getWebsiteURL() + "\n" + request.getContentMode());
+        System.out.println(response + "\n\n" + request.getUsername() + "\n" + request.getWebsiteURL() + "\n");
         return response;
     }
 
@@ -89,8 +90,19 @@ public class LinksController {
         dynamoService.updateSummary(request.getWebsiteURL(), request.getWebsiteContentMode(), result);
         return result;
     }
-    
-    
 
+    @GetMapping("/user/saved/articles")
+    public Map<String, String> getSavedArticles(@RequestParam String username) {
+        return linksService.userSavedArticles(username);
+    }
+    
+    @PostMapping("/user/saved/articles")
+    public ResponseEntity<String> saveArticleForUser(@RequestBody UserRequest request) {
+        return linksService.addArticleForUser(request.getUsername(), request.getArticleLink(), request.getArticleTitle());
+    }
 
+    @DeleteMapping("/user/saved/articles")
+    public ResponseEntity<String> deleteArticleForUser(@RequestBody UserRequest request) {
+        return linksService.removeArticleForUser(request.getUsername(), request.getArticleLink());
+    }
 }
