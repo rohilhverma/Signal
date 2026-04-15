@@ -1,4 +1,4 @@
-package com.rohil_verma.organization_api.postgres_stuff;
+    package com.rohil_verma.organization_api.postgres_stuff;
 
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;

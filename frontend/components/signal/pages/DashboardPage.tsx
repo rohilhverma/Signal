@@ -14,6 +14,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Loader2,
+  Tags,
 } from "lucide-react";
 import {
   type Source,
@@ -22,7 +23,7 @@ import {
   DEFAULT_ACCENT,
 } from "../data/mockArticles";
 import { usePreferences } from "../context/PreferencesContext";
-import { useAppState } from "../context/AppStateContext";
+import { useAppState, type ManagedSource } from "../context/AppStateContext";
 import { useToast } from "../context/ToastContext";
 
 // ─── Utilities ──────────────────────────────────────────────────────────────
@@ -51,6 +52,80 @@ function getAgeState(article: Article, seenIds: Set<string>): AgeState {
   if (ageHours >= 24) return "expired";
   if (seenIds.has(article.id)) return "read";
   return "new";
+}
+
+function normalizeKeyword(value: string): string {
+  return value.trim().replace(/\s+/g, " ");
+}
+
+const KEYWORD_SYNONYMS: Record<string, string[]> = {
+  ai: ["artificial intelligence", "machine learning", "ML"],
+  "electric vehicles": ["EV", "EVs", "electric vehicle"],
+  "autonomous vehicles": ["self-driving", "robotaxi", "driverless"],
+  cybersecurity: ["cyber security", "infosec", "data breach"],
+  startups: ["startup", "start-up"],
+};
+
+type KeywordArticleMatch = {
+  matchedKeyword: string;
+  matchedTerms: string[];
+  score: number;
+};
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function buildWholeWordRegex(value: string): RegExp {
+  return new RegExp(`\\b${escapeRegex(value)}\\b`, "gi");
+}
+
+function countWholeWordMatches(text: string, value: string): number {
+  if (!text.trim() || !value.trim()) return 0;
+  const matches = text.match(buildWholeWordRegex(value));
+  return matches ? matches.length : 0;
+}
+
+function getKeywordVariants(keyword: string): string[] {
+  const normalized = normalizeKeyword(keyword);
+  const synonyms = KEYWORD_SYNONYMS[normalized.toLowerCase()] ?? [];
+
+  return Array.from(
+    new Set([normalized, ...synonyms.map(normalizeKeyword)].filter(Boolean))
+  );
+}
+
+function scoreArticleForKeyword(article: Article, keyword: string): KeywordArticleMatch | null {
+  const variants = getKeywordVariants(keyword);
+  let score = 0;
+  const matchedTerms: string[] = [];
+
+  for (const variant of variants) {
+    const titleMatches = countWholeWordMatches(article.title, variant);
+    const summaryMatches = countWholeWordMatches(article.summaryDefault, variant);
+
+    if (titleMatches === 0 && summaryMatches === 0) {
+      continue;
+    }
+
+    matchedTerms.push(variant);
+
+    if (titleMatches > 0) {
+      score += 5;
+    }
+
+    score += summaryMatches;
+  }
+
+  if (score === 0) {
+    return null;
+  }
+
+  return {
+    matchedKeyword: keyword,
+    matchedTerms,
+    score,
+  };
 }
 
 // Extract the summary text from a raw Gemini JSON response or plain string.
@@ -423,6 +498,8 @@ interface ArticleCardProps {
   onSummaryModeChange: (mode: SummaryMode) => void;
   loadingModes: Set<SummaryMode>;
   sourceCollapsed: boolean;
+  matchLabel?: string | null;
+  onTrackLinkClick: () => void;
 }
 
 function ArticleCard({
@@ -438,6 +515,8 @@ function ArticleCard({
   onSummaryModeChange,
   loadingModes,
   sourceCollapsed,
+  matchLabel,
+  onTrackLinkClick,
 }: ArticleCardProps) {
   const isRead = ageState === "read";
   const accent = source.accentColor ?? DEFAULT_ACCENT;
@@ -526,6 +605,7 @@ function ArticleCard({
               href={article.url}
               target="_blank"
               rel="noopener noreferrer"
+              onClick={onTrackLinkClick}
               style={{
                 display: "block",
                 fontSize: 14,
@@ -673,12 +753,34 @@ function ArticleCard({
           </p>
         </div>
 
+        {matchLabel && (
+          <div style={{ paddingLeft: 36, marginTop: 8 }}>
+            <span
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 5,
+                fontSize: 10.5,
+                fontWeight: 600,
+                color: "var(--sg-muted)",
+                backgroundColor: "var(--sg-nav-active)",
+                border: "1px solid var(--sg-border)",
+                borderRadius: 999,
+                padding: "4px 8px",
+              }}
+            >
+              Matched: {matchLabel}
+            </span>
+          </div>
+        )}
+
         {/* Footer */}
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginTop: 10, paddingLeft: 36 }}>
           <a
             href={article.url}
             target="_blank"
             rel="noopener noreferrer"
+            onClick={onTrackLinkClick}
             style={{
               fontSize: 11,
               color: "var(--sg-muted)",
@@ -733,6 +835,8 @@ interface SourceGroupProps {
   loadingModesByArticle: Map<string, Set<SummaryMode>>;
   sourceCollapsed: boolean;
   onToggleSourceCollapse: () => void;
+  matchLabelsByArticle?: Map<string, string>;
+  onTrackLinkClick: (articleId: string) => void;
 }
 
 function SourceGroup({
@@ -749,6 +853,8 @@ function SourceGroup({
   loadingModesByArticle,
   sourceCollapsed,
   onToggleSourceCollapse,
+  matchLabelsByArticle,
+  onTrackLinkClick,
 }: SourceGroupProps) {
   const accent = source.accentColor ?? DEFAULT_ACCENT;
   const visibleArticles = articles.filter((a) => getAgeState(a, seenIds) !== "expired");
@@ -836,6 +942,8 @@ function SourceGroup({
               onSummaryModeChange={(mode) => onSummaryModeChange(article.id, mode)}
               loadingModes={loadingModesByArticle.get(article.id) ?? new Set()}
               sourceCollapsed={sourceCollapsed}
+              matchLabel={matchLabelsByArticle?.get(article.id) ?? null}
+              onTrackLinkClick={() => onTrackLinkClick(article.id)}
             />
           );
         })}
@@ -869,6 +977,7 @@ interface ReaderViewProps {
   sources: Source[];
   bookmarkedIds: Set<string>;
   onToggleBookmark: (id: string) => void;
+  onTrackLinkClick: (articleId: string) => void;
   summaryModes: Map<string, SummaryMode>;
   onSummaryModeChange: (articleId: string, mode: SummaryMode) => void;
   loadingModesByArticle: Map<string, Set<SummaryMode>>;
@@ -881,6 +990,7 @@ function ReaderView({
   sources,
   bookmarkedIds,
   onToggleBookmark,
+  onTrackLinkClick,
   summaryModes,
   onSummaryModeChange,
   loadingModesByArticle,
@@ -996,6 +1106,7 @@ function ReaderView({
             href={article.url}
             target="_blank"
             rel="noopener noreferrer"
+            onClick={() => onTrackLinkClick(article.id)}
             style={{
               fontSize: 22,
               fontWeight: 700,
@@ -1062,6 +1173,7 @@ function ReaderView({
             href={article.url}
             target="_blank"
             rel="noopener noreferrer"
+            onClick={() => onTrackLinkClick(article.id)}
             style={{
               fontSize: 12,
               fontWeight: 500,
@@ -1194,10 +1306,17 @@ function ReaderView({
 // Per-article summary content (mutable in state)
 type ArticleSummaryCache = Map<string, Partial<Record<SummaryMode, string>>>;
 
+type DashboardMode = "default" | "keyword";
+
+const DASHBOARD_MODES: { key: DashboardMode; label: string }[] = [
+  { key: "default", label: "Default" },
+  { key: "keyword", label: "Keyword" },
+];
+
 export function DashboardPage() {
   const navigate = useNavigate();
   const { density, viewMode } = usePreferences();
-  const { state: appState, saveBookmark, removeBookmark, isBookmarked, addSource, setArticles, patchArticleSummary: patchArticle } = useAppState();
+  const { state: appState, saveBookmark, removeBookmark, isBookmarked, addSource, setArticles, patchArticleSummary: patchArticle, trackArticleInteraction } = useAppState();
   const { showToast } = useToast();
 
   const [loading, setLoading] = useState(appState.sources.length === 0);
@@ -1220,6 +1339,49 @@ export function DashboardPage() {
 
   // Tracks which modes are currently loading per article
   const [loadingModesByArticle, setLoadingModesByArticle] = useState<Map<string, Set<SummaryMode>>>(new Map());
+  const [keywords, setKeywords] = useState<string[]>([]);
+  const [selectedKeyword, setSelectedKeyword] = useState<string | null>(null);
+  const [dashboardMode, setDashboardMode] = useState<DashboardMode>("default");
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadKeywords() {
+      try {
+        const res = await fetch("/api/user/keywords?username=rohil");
+        if (!res.ok) return;
+
+        const payload = (await res.json()) as string[];
+        if (cancelled) return;
+
+        const nextKeywords = Array.from(
+          new Set((Array.isArray(payload) ? payload : []).map(normalizeKeyword).filter(Boolean))
+        );
+
+        setKeywords(nextKeywords);
+      } catch (error) {
+        console.error("Failed to load keywords:", error);
+      }
+    }
+
+    void loadKeywords();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (dashboardMode !== "keyword") {
+      return;
+    }
+
+    setSelectedKeyword((current) => {
+      if (keywords.length === 0) return null;
+      if (current && keywords.includes(current)) return current;
+      return keywords[0];
+    });
+  }, [dashboardMode, keywords]);
 
   // Fetch / load data
   useEffect(() => {
@@ -1315,12 +1477,18 @@ export function DashboardPage() {
   // Handle summary mode change — fetch if not already cached
   const handleSummaryModeChange = useCallback(
     async (articleId: string, mode: SummaryMode) => {
+      const previousMode = summaryModes.get(articleId) ?? "default";
       setSummaryModes((prev) => new Map(prev).set(articleId, mode));
+
+      const currentArticle = articles.find((article) => article.id === articleId);
+      if (currentArticle && mode === "deepDive" && previousMode !== "deepDive") {
+        trackArticleInteraction(currentArticle, "deep_dive_click");
+      }
 
       // Default is always available — no fetch needed
       if (mode === "default") return;
 
-      const article = articles.find((a: Article) => a.id === articleId);
+      const article = currentArticle;
       if (!article) return;
 
       // Check session cache or pre-loaded value from DynamoDB
@@ -1348,13 +1516,24 @@ export function DashboardPage() {
         const res = await fetch("/api/user/url/resummarization", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ websiteURL: article.url, websiteContentMode: backendMode }),
+          body: JSON.stringify({ websiteURL: article.sourceId, articleLink: article.url, websiteContentMode: backendMode }),
         });
 
         if (!res.ok) throw new Error(`Resummarize failed: ${res.status}`);
 
         const raw = await res.text();
         const generatedText = extractSummaryText(raw);
+
+        console.log("[signal] resummarize response", {
+          articleId,
+          articleTitle: article.title,
+          articleUrl: article.url,
+          mode,
+          backendMode,
+          raw,
+          extractedText: generatedText,
+          extractedLength: generatedText?.length ?? 0,
+        });
 
         if (generatedText) {
           setSummaryCache((prev) => {
@@ -1379,39 +1558,113 @@ export function DashboardPage() {
         });
       }
     },
-    [summaryCache, loadingModesByArticle, articles, patchArticle, showToast]
+    [summaryCache, loadingModesByArticle, articles, patchArticle, showToast, trackArticleInteraction]
   );
 
   // Computed stats
-  const stats = useMemo(() => {
+  const keywordRankedArticles = useMemo(() => {
+    if (dashboardMode !== "keyword" || !selectedKeyword) {
+      return [];
+    }
+
+    return articles
+      .filter((article) => (Date.now() - article.publishedAt.getTime()) / (1000 * 60 * 60) < 24)
+      .map((article) => ({
+        article,
+        match: scoreArticleForKeyword(article, selectedKeyword),
+      }))
+      .filter((entry): entry is { article: Article; match: KeywordArticleMatch } => entry.match !== null)
+      .sort((left, right) => {
+        if (right.match.score !== left.match.score) {
+          return right.match.score - left.match.score;
+        }
+        return right.article.publishedAt.getTime() - left.article.publishedAt.getTime();
+      })
+      .slice(0, 8);
+  }, [articles, dashboardMode, selectedKeyword]);
+
+  const filteredArticles = useMemo(() => {
     const nonExpired = articles.filter((a) => (Date.now() - a.publishedAt.getTime()) / (1000 * 60 * 60) < 24);
+    if (dashboardMode !== "keyword") return nonExpired;
+    return keywordRankedArticles.map((entry) => entry.article);
+  }, [articles, dashboardMode, keywordRankedArticles]);
+
+  const matchLabelsByArticle = useMemo(() => {
+    if (dashboardMode !== "keyword") {
+      return new Map<string, string>();
+    }
+
+    return new Map(
+      keywordRankedArticles.map(({ article, match }) => [article.id, match.matchedKeyword])
+    );
+  }, [dashboardMode, keywordRankedArticles]);
+
+  const visibleSources = useMemo<ManagedSource[]>(() => {
+    if (dashboardMode !== "keyword") {
+      const sourceIds = new Set(filteredArticles.map((article) => article.sourceId));
+      return sources.filter((source) => sourceIds.has(source.id));
+    }
+
+    const orderedSourceIds = Array.from(new Set(filteredArticles.map((article) => article.sourceId)));
+    const orderedSources: ManagedSource[] = [];
+
+    for (const sourceId of orderedSourceIds) {
+      const source = sources.find((candidate) => candidate.id === sourceId);
+      if (source) {
+        orderedSources.push(source);
+      }
+    }
+
+    return orderedSources;
+  }, [dashboardMode, filteredArticles, sources]);
+
+  const stats = useMemo(() => {
+    const nonExpired = filteredArticles;
     const sourcesWithContent = new Set(nonExpired.map((a) => a.sourceId)).size;
     return { articleCount: nonExpired.length, sourceCount: sourcesWithContent };
-  }, [articles]);
+  }, [filteredArticles]);
 
   // Flattened article list for Reader view (grouped by source, newest first within each group)
   const flatArticles = useMemo(() => {
     const result: Article[] = [];
-    for (const src of sources) {
-      const srcArticles = articles
+    for (const src of visibleSources) {
+      const srcArticles = filteredArticles
         .filter((a) => a.sourceId === src.id && getAgeState(a, seenIds) !== "expired")
         .sort((a, b) => b.publishedAt.getTime() - a.publishedAt.getTime());
       result.push(...srcArticles);
     }
     return result;
-  }, [articles, sources, seenIds]);
+  }, [filteredArticles, visibleSources, seenIds]);
 
   const articlesBySource = useMemo(() => {
     const map = new Map<string, Article[]>();
-    for (const src of sources) map.set(src.id, []);
-    for (const article of articles) {
+    for (const src of visibleSources) map.set(src.id, []);
+    for (const article of filteredArticles) {
       if (!map.has(article.sourceId)) map.set(article.sourceId, []);
       map.get(article.sourceId)!.push(article);
     }
     return map;
-  }, [articles, sources]);
+  }, [filteredArticles, visibleSources]);
+
+  const keywordCounts = useMemo(
+    () =>
+      keywords.map((keyword) => ({
+        keyword,
+        count: articles.filter((article) => {
+          const ageHours = (Date.now() - article.publishedAt.getTime()) / (1000 * 60 * 60);
+          return ageHours < 24 && scoreArticleForKeyword(article, keyword) !== null;
+        }).length,
+      })),
+    [articles, keywords]
+  );
 
   function toggleExpand(id: string) {
+    const article = articles.find((entry) => entry.id === id);
+    const isOpening = !expandedIds.has(id);
+    if (article && isOpening) {
+      trackArticleInteraction(article, "article_click");
+    }
+
     setExpandedIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id); else next.add(id);
@@ -1423,6 +1676,7 @@ export function DashboardPage() {
     const article = articles.find((a) => a.id === id);
     const source = sources.find((s) => s.id === article?.sourceId);
     if (!article || !source) return;
+    trackArticleInteraction(article, "bookmark_click");
     const alreadyBookmarked = isBookmarked(id);
     if (alreadyBookmarked) {
       const removed = await removeBookmark(article.url);
@@ -1441,12 +1695,22 @@ export function DashboardPage() {
     }
   }
 
+  const handleLinkClick = useCallback(
+    (articleId: string) => {
+      const article = articles.find((entry) => entry.id === articleId);
+      if (article) {
+        trackArticleInteraction(article, "link_click");
+      }
+    },
+    [articles, trackArticleInteraction]
+  );
+
   function handleExpandAll() {
     if (allExpanded) {
       setExpandedIds(new Set());
       setAllExpanded(false);
     } else {
-      setExpandedIds(new Set(articles.map((a) => a.id)));
+      setExpandedIds(new Set(filteredArticles.map((a) => a.id)));
       setAllExpanded(true);
     }
   }
@@ -1505,21 +1769,24 @@ export function DashboardPage() {
           @keyframes spin { to { transform: rotate(360deg); } }
         `}</style>
         {loading ? (
-          <div style={{ padding: outerPadding, display: "flex", flexDirection: "column", gap: 10, maxWidth: 860, margin: "0 auto" }}>
+          <div style={{ padding: outerPadding, display: "flex", flexDirection: "column", gap: 14, maxWidth: 860, margin: "0 auto" }}>
             {Array.from({ length: 3 }).map((_, i) => <SkeletonCard key={i} />)}
           </div>
         ) : (
-          <ReaderView
-            articles={flatArticles}
-            sources={sources}
-            bookmarkedIds={bookmarkedIds}
-            onToggleBookmark={toggleBookmark}
-            summaryModes={summaryModes}
-            onSummaryModeChange={handleSummaryModeChange}
-            loadingModesByArticle={loadingModesByArticle}
-            seenIds={seenIds}
-            newSinceLastVisit={newSinceLastVisit}
-          />
+          <div style={{ maxWidth: 960, margin: "0 auto", display: "flex", flexDirection: "column", gap: 14 }}>
+            <ReaderView
+              articles={flatArticles}
+              sources={visibleSources}
+              bookmarkedIds={bookmarkedIds}
+              onToggleBookmark={toggleBookmark}
+              onTrackLinkClick={handleLinkClick}
+              summaryModes={summaryModes}
+              onSummaryModeChange={handleSummaryModeChange}
+              loadingModesByArticle={loadingModesByArticle}
+              seenIds={seenIds}
+              newSinceLastVisit={newSinceLastVisit}
+            />
+          </div>
         )}
       </>
     );
@@ -1551,7 +1818,6 @@ export function DashboardPage() {
           gap: isCompact ? 20 : 28,
         }}
       >
-        {/* Pending feed update banner */}
         {pendingUpdate && (
           <div
             style={{
@@ -1609,6 +1875,86 @@ export function DashboardPage() {
           </div>
         )}
 
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            flexWrap: "wrap",
+          }}
+        >
+          {DASHBOARD_MODES.map(({ key, label }) => {
+            const isActive = dashboardMode === key;
+            return (
+              <button
+                key={key}
+                onClick={() => setDashboardMode(key)}
+                aria-pressed={isActive}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  padding: "6px 12px",
+                  borderRadius: 999,
+                  border: isActive ? "1px solid var(--sg-text)" : "1px solid var(--sg-border)",
+                  backgroundColor: isActive ? "var(--sg-nav-active)" : "var(--sg-surface)",
+                  color: "var(--sg-text)",
+                  fontSize: 12.5,
+                  fontWeight: isActive ? 700 : 500,
+                  cursor: "pointer",
+                  boxShadow: isActive ? "0 2px 10px rgba(0,0,0,0.05)" : "none",
+                  transition: "border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease",
+                }}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
+
+        {dashboardMode === "keyword" && keywordCounts.length > 0 && (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              flexWrap: "wrap",
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 7, marginRight: 2 }}>
+              <Tags style={{ width: 13, height: 13, color: "var(--sg-muted)" }} />
+              <span style={{ fontSize: 12, fontWeight: 600, color: "var(--sg-muted)" }}>
+                Keywords
+              </span>
+            </div>
+
+            {keywordCounts.map(({ keyword, count }) => (
+              <button
+                key={keyword}
+                onClick={() => setSelectedKeyword(keyword)}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: count > 9 ? "8px 14px" : "6px 12px",
+                  borderRadius: 999,
+                  border: selectedKeyword === keyword ? "1px solid var(--sg-text)" : "1px solid var(--sg-border)",
+                  backgroundColor: selectedKeyword === keyword ? "var(--sg-nav-active)" : "var(--sg-surface)",
+                  color: "var(--sg-text)",
+                  fontSize: 12.5,
+                  fontWeight: selectedKeyword === keyword ? 700 : 500,
+                  cursor: "pointer",
+                  boxShadow: selectedKeyword === keyword ? "0 2px 10px rgba(0,0,0,0.06)" : "none",
+                  transition: "border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease",
+                }}
+              >
+                {keyword}
+                <span style={{ fontSize: 11, color: "var(--sg-muted)" }}>{count}</span>
+              </button>
+            ))}
+          </div>
+        )}
+
         {/* Daily Digest Banner */}
         <div
           style={{
@@ -1628,7 +1974,11 @@ export function DashboardPage() {
             <span style={{ fontSize: 13, fontWeight: 500, color: "var(--sg-text)" }}>
               {loading
                 ? "Loading your digest…"
-                : `${stats.articleCount} articles across ${stats.sourceCount} sources`}
+                : dashboardMode !== "keyword"
+                  ? `${stats.articleCount} articles across ${stats.sourceCount} sources`
+                  : selectedKeyword
+                    ? `${stats.articleCount} articles across ${stats.sourceCount} sources for "${selectedKeyword}"`
+                    : "Choose a keyword to focus your feed"}
             </span>
             {today && (
               <span style={{ fontSize: 11.5, color: "var(--sg-muted)", fontWeight: 400 }}>
@@ -1637,7 +1987,7 @@ export function DashboardPage() {
             )}
           </div>
 
-          {!loading && articles.length > 0 && (
+          {!loading && filteredArticles.length > 0 && (
             <button
               onClick={handleExpandAll}
               style={{
@@ -1679,10 +2029,48 @@ export function DashboardPage() {
           <EmptyState onAddSource={() => navigate("/sources")} />
         )}
 
+        {!loading && dashboardMode === "keyword" && keywords.length === 0 && sources.length > 0 && (
+          <div
+            style={{
+              padding: "22px 20px",
+              borderRadius: 10,
+              border: "1px solid var(--sg-border)",
+              backgroundColor: "var(--sg-surface)",
+            }}
+          >
+            <div style={{ fontSize: 14, fontWeight: 600, color: "var(--sg-text)" }}>
+              No keywords set up yet.
+            </div>
+            <div style={{ fontSize: 12.5, color: "var(--sg-muted)", marginTop: 4, lineHeight: 1.6 }}>
+              Add keywords in Settings, then come back here to focus the feed on a specific topic.
+            </div>
+          </div>
+        )}
+
+        {!loading && sources.length > 0 && filteredArticles.length === 0 && !(dashboardMode === "keyword" && keywords.length === 0) && (
+          <div
+            style={{
+              padding: "22px 20px",
+              borderRadius: 10,
+              border: "1px solid var(--sg-border)",
+              backgroundColor: "var(--sg-surface)",
+            }}
+          >
+            <div style={{ fontSize: 14, fontWeight: 600, color: "var(--sg-text)" }}>
+              No current articles match {dashboardMode === "keyword" && selectedKeyword ? `"${selectedKeyword}"` : "this view"}.
+            </div>
+            <div style={{ fontSize: 12.5, color: "var(--sg-muted)", marginTop: 4, lineHeight: 1.6 }}>
+              {dashboardMode === "keyword"
+                ? "Try another keyword or adjust your keywords in Settings."
+                : "No articles are currently available in this view."}
+            </div>
+          </div>
+        )}
+
         {/* Feed grouped by source */}
-        {!loading && sources.length > 0 && (
+        {!loading && visibleSources.length > 0 && filteredArticles.length > 0 && (
           <div style={{ display: "flex", flexDirection: "column", gap: isCompact ? 32 : 44 }}>
-            {sources.map((source) => {
+            {visibleSources.map((source) => {
               const srcArticles = articlesBySource.get(source.id) ?? [];
               return (
                 <SourceGroup
@@ -1704,6 +2092,8 @@ export function DashboardPage() {
                     next.has(source.id) ? next.delete(source.id) : next.add(source.id);
                     return next;
                   })}
+                  matchLabelsByArticle={dashboardMode === "keyword" ? matchLabelsByArticle : undefined}
+                  onTrackLinkClick={handleLinkClick}
                 />
               );
             })}

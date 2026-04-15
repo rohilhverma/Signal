@@ -1,11 +1,27 @@
 package com.rohil_verma.organization_api.postgres_stuff;
 
+import java.util.HashMap;
+
 public class UserRequest {
     private String username;
     private String email;
     private String websiteURL;
     private String websiteContentMode;
+    private String keyword;
+    private HashMap<String,Integer> userInformation;
 
+    public HashMap<String, Integer> getUserInformation() {
+        return userInformation;
+    }
+    public void setUserInformation(HashMap<String, Integer> userInformation) {
+        this.userInformation = userInformation;
+    }
+    public String getKeyword() {
+        return keyword;
+    }
+    public void setKeyword(String keyword) {
+        this.keyword = keyword;
+    }
     public String getUsername() { return username; }
     public void setUsername(String username) { this.username = username; }
 

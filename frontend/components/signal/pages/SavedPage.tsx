@@ -219,9 +219,11 @@ const SORT_OPTIONS: { key: SortKey; label: string }[] = [
 function SavedCard({
   bookmark,
   onUnbookmark,
+  onTrackInteraction,
 }: {
   bookmark: BookmarkedArticle;
   onUnbookmark: () => void;
+  onTrackInteraction: (type: "bookmark_click" | "deep_dive_click" | "link_click") => void;
 }) {
   const { article, source } = bookmark;
   const accent = source.accentColor ?? DEFAULT_ACCENT;
@@ -231,6 +233,7 @@ function SavedCard({
 
   // Animate-out then call parent
   const handleUnbookmark = () => {
+    onTrackInteraction("bookmark_click");
     setRemoving(true);
     setTimeout(onUnbookmark, 220);
   };
@@ -308,6 +311,7 @@ function SavedCard({
               href={article.url}
               target="_blank"
               rel="noopener noreferrer"
+              onClick={() => onTrackInteraction("link_click")}
               style={{
                 display: "block",
                 fontSize: 14,
@@ -361,7 +365,12 @@ function SavedCard({
         <div style={{ paddingLeft: 36, marginTop: 10 }}>
           <SummaryModeToggle
             activeMode={summaryMode}
-            onSelect={setSummaryMode}
+            onSelect={(mode) => {
+              if (mode === "deepDive" && summaryMode !== "deepDive") {
+                onTrackInteraction("deep_dive_click");
+              }
+              setSummaryMode(mode);
+            }}
             accentColor={accent}
             loadingModes={loadingModes}
           />
@@ -390,6 +399,7 @@ function SavedCard({
             href={article.url}
             target="_blank"
             rel="noopener noreferrer"
+            onClick={() => onTrackInteraction("link_click")}
             style={{
               fontSize: 11,
               color: "var(--sg-muted)",
@@ -414,7 +424,7 @@ function SavedCard({
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export function SavedPage() {
-  const { state, removeBookmark } = useAppState();
+  const { state, removeBookmark, trackArticleInteraction } = useAppState();
   const { showToast } = useToast();
   const { density } = usePreferences();
   const isCompact = density === "compact";
@@ -545,6 +555,7 @@ export function SavedPage() {
               key={bm.article.id}
               bookmark={bm}
               onUnbookmark={() => handleUnbookmark(bm)}
+              onTrackInteraction={(type) => trackArticleInteraction(bm.article, type)}
             />
           ))}
         </div>

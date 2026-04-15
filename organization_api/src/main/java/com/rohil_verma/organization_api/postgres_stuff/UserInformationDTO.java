@@ -5,6 +5,7 @@ import java.util.List;
 public class UserInformationDTO {
     private String email;
     private String username;
+    
     private List<String> websites;
 
 

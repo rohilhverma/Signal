@@ -23,8 +23,6 @@ import software.amazon.awssdk.services.dynamodb.model.UpdateItemRequest;
 import org.springframework.scheduling.annotation.Async;
 import static java.util.Map.entry;
 
-import java.net.URI;
-
 @Service
 public class DynamoService{
 
@@ -100,15 +98,13 @@ public class DynamoService{
     }
 
     @Async
-    public void updateSummary(String url, String mode, String resummarization) throws Exception {
-        String host = new URI(url).getHost().replaceFirst("^www\\.", "");
-        String pk = "https://" + host;
+    public void updateSummary(String pk, String articleUrl, String mode, String resummarization) throws Exception {
         int index = mode.equals("shorter") ? 0 : mode.equals("default") ? 1 : 2;
         UpdateItemRequest request = UpdateItemRequest.builder()
             .tableName("MyScrapingHandlerTable")
             .key(Map.of(
                 "websiteURLs", AttributeValue.builder().s(pk).build(),
-                "SK", AttributeValue.builder().s(url).build()
+                "SK", AttributeValue.builder().s(articleUrl).build()
             ))
             .updateExpression("SET summary[" + index + "] = :resummarization")
             .expressionAttributeValues(Map.of(

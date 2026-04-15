@@ -9,6 +9,9 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+
+import com.rohil_verma.organization_api.UserActivity;
+
 import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -27,7 +30,6 @@ public class LinksController {
 
     @Autowired
     private LinksService linksService;
-
 
     @GetMapping("/links/user")
     public List<String> WebsitesForUser(@RequestParam String username) {
@@ -86,8 +88,8 @@ public class LinksController {
     
     @PostMapping("/user/url/resummarization")
     public String resummarize(@RequestBody UserRequest request) throws Exception {
-        String result = dynamoService.resummarizeRequest(request.getWebsiteURL(), request.getWebsiteContentMode());
-        dynamoService.updateSummary(request.getWebsiteURL(), request.getWebsiteContentMode(), result);
+        String result = dynamoService.resummarizeRequest(request.getArticleLink(), request.getWebsiteContentMode());
+        dynamoService.updateSummary(request.getWebsiteURL(), request.getArticleLink(), request.getWebsiteContentMode(), result);
         return result;
     }
 
@@ -105,4 +107,41 @@ public class LinksController {
     public ResponseEntity<String> deleteArticleForUser(@RequestBody UserRequest request) {
         return linksService.removeArticleForUser(request.getUsername(), request.getArticleLink());
     }
+
+    @DeleteMapping("/users/all")
+    public ResponseEntity<String> deleteAllUsers() {
+        return linksService.deleteAllUsers();
+    }
+
+    @GetMapping("/user/keywords")
+    public List<String> getUserKeywords(@RequestParam String username) {
+        return linksService.listUserKeywords(username);
+    }
+    
+    @PostMapping("/user/keywords")
+    public ResponseEntity<String> addUserKeyword(@RequestBody UserRequest request) {
+        //TODO: process POST request
+        return linksService.addUserKeyword(request.getUsername(), request.getKeyword());
+    }
+    
+    @DeleteMapping("/user/keywords")
+    public ResponseEntity<String> removeUserKeyword(@RequestBody UserRequest request){
+        return linksService.removeUserKeyword(request.getUsername(), request.getKeyword());
+    }
+    
+    @PostMapping("/user/activity")
+    public ResponseEntity<String> saveUserActivity(@RequestBody UserActivityDTO userActivity) {
+        return linksService.saveUserActivity(userActivity);
+    }
+
+    @GetMapping("/user/activity")
+    public List<UserActivity> getUserActivity(@RequestParam String username) {
+        return linksService.fetchUserActivity(username);
+    }
+    
+    @DeleteMapping("/user/activity/all")
+    public ResponseEntity<String> deleteAllActivity() {
+        return linksService.deleteAllActivity();
+    }
 }
+

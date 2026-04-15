@@ -10,6 +10,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.rohil_verma.organization_api.MessageSender;
+import com.rohil_verma.organization_api.UserActivity;
 
 @Service
 @Transactional
@@ -20,6 +21,9 @@ public class LinksService {
 
     @Autowired
     private SubscriptionRepository subscriptionRepository;
+
+    @Autowired
+    private UserActivityRepository userActivityRepository;
 
     @Autowired
     private MessageSender messageSender;
@@ -137,5 +141,71 @@ public class LinksService {
 }
     }
 
-    
+    public ResponseEntity<String> deleteAllUsers() {
+        try {
+            userRepository.deleteAll();
+            return ResponseEntity.ok("All users deleted");
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body("Failed to delete all users");
+        }
+    }
+
+    public List<String> listUserKeywords(String username) {
+        User user = userRepository.findByUsername(username).orElseThrow();
+        return user.getKeywords();
+    }
+
+    public ResponseEntity<String> addUserKeyword(String username, String keyword){
+        try {
+            User user =userRepository.findByUsername(username).orElseThrow();
+            user.addKeywords(keyword);
+            userRepository.save(user);
+            return ResponseEntity.ok("User Keyword Added");
+        } catch(Exception e){return ResponseEntity.status(500).body("Failed to save user keyword");}
+    }
+
+    public ResponseEntity<String> removeUserKeyword(String username, String keyword){
+        try {
+            User user =userRepository.findByUsername(username).orElseThrow();
+            user.removeKeyword(keyword);
+            userRepository.save(user);
+            return ResponseEntity.ok("User Keyword Removed");
+        } catch(Exception e){return ResponseEntity.status(500).body("Failed to remove user keyword");}
+    }
+
+    public ResponseEntity<String> saveUserActivity(UserActivityDTO userActivity) {
+        try {
+            User user = userRepository.findByUsername(userActivity.getUsername()).orElseThrow();
+            userActivity.getActivity().forEach((link, score) -> {
+                UserActivity activity = new UserActivity();
+                activity.setUser(user);
+                activity.setArticleLink(link);
+                activity.setScore(score);
+                System.out.println(activity);
+                userActivityRepository.save(activity);
+            });
+            return ResponseEntity.ok("Activity recorded");
+        } catch (Exception e) {
+            e.printStackTrace();
+            return ResponseEntity.status(500).body("Failed to save user activity");
+        }
+    }
+
+    public List<UserActivity> fetchUserActivity(String username){
+        User user = userRepository.findByUsername(username).orElseThrow();
+        return userActivityRepository.findByUser(user);
+    }
+
+    public ResponseEntity<String> deleteAllActivity() {
+        try {
+            userActivityRepository.deleteAll();
+            return ResponseEntity.ok("Activity table cleared");
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body("Failed to clear activity table");
+        }
+    }
+
+
+
+
 }

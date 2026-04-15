@@ -1,7 +1,10 @@
 package com.rohil_verma.organization_api.postgres_stuff;
 
 import java.time.LocalTime;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import jakarta.persistence.CascadeType;
@@ -31,7 +34,8 @@ public class User {
 
     private LocalTime userUpdateTime;
     
-    private String keywords;
+    private String keywords = "";
+
 
     @OneToMany(mappedBy = "user", cascade = CascadeType.ALL, orphanRemoval = true)
     @MapKey(name = "websiteURL")
@@ -82,9 +86,24 @@ public class User {
     public Map<String, Subscription> getSubscriptions() { return subscriptions; }
     public void setSubscriptions(Map<String, Subscription> subscriptions) { this.subscriptions = subscriptions; }
 
-    public String getKeywords(){return keywords;}
+    public List<String> getKeywords() {
+        if (keywords == null || keywords.isBlank()) return new ArrayList<>();
+        return new ArrayList<>(Arrays.asList(keywords.split(",")));
+    }
 
-    public void setKeywords(String keywords){this.keywords = keywords;}
+    public void addKeywords(String keyword) {
+        List<String> list = getKeywords();
+        if (!list.contains(keyword)) {
+            list.add(keyword);
+            this.keywords = String.join(",", list);
+        }
+    }
+
+    public void removeKeyword(String keyword) {
+        List<String> list = getKeywords();
+        list.remove(keyword);
+        this.keywords = String.join(",", list);
+    }
 
     public Map<String,SavedArticles> getSavedArticles() { return usersSavedArticles; }
     public void setUsersSavedArticles(Map<String,SavedArticles> usersSavedArticles) { this.usersSavedArticles = usersSavedArticles; }
@@ -100,6 +119,9 @@ public class User {
     public void removeArticleForUser(String articleURL){
         usersSavedArticles.remove(articleURL);
     } 
+
+     
+
     @Override
     public String toString() {
         return "User [id=" + id + ", username=" + username + ", email=" + email + "]";

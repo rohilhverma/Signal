@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
-import { Sun, Moon, Coffee, Type, AlignJustify, Clock } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Sun, Moon, Coffee, Type, AlignJustify, Clock, Tags, X } from "lucide-react";
 import { usePreferences, type Theme, type FontFamily, type Density } from "../context/PreferencesContext";
+import { useToast } from "../context/ToastContext";
 
 // ─── Section components ───────────────────────────────────────────────────────
 
@@ -342,6 +343,30 @@ const TIME_OPTIONS = [
   "8:00 PM", "10:00 PM",
 ];
 
+function normalizeKeyword(value: string): string {
+  return value.trim().replace(/\s+/g, " ");
+}
+
+function mergeKeywords(values: string[]): string[] {
+  const seen = new Set<string>();
+  const next: string[] = [];
+
+  for (const value of values) {
+    const normalized = normalizeKeyword(value);
+    if (!normalized) continue;
+
+    const lowered = normalized.toLowerCase();
+    if (seen.has(lowered)) continue;
+
+    seen.add(lowered);
+    next.push(normalized);
+  }
+
+  return next;
+}
+
+const USERNAME = "rohil";
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export function SettingsPage() {
@@ -351,8 +376,120 @@ export function SettingsPage() {
     fontSize, setFontSize,
     density, setDensity,
   } = usePreferences();
+  const { showToast } = useToast();
 
   const [preferredTime, setPreferredTime] = useState("7:00 AM");
+  const [keywordInput, setKeywordInput] = useState("");
+  const [keywords, setKeywords] = useState<string[]>([]);
+  const [keywordsLoading, setKeywordsLoading] = useState(true);
+  const [keywordsSaving, setKeywordsSaving] = useState(false);
+  const [keywordBeingRemoved, setKeywordBeingRemoved] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadKeywords() {
+      try {
+        setKeywordsLoading(true);
+        const res = await fetch(`/api/user/keywords?username=${encodeURIComponent(USERNAME)}`);
+        if (!res.ok) {
+          throw new Error(`Failed to load keywords (${res.status})`);
+        }
+
+        const data = (await res.json()) as string[];
+        if (cancelled) return;
+
+        setKeywords(mergeKeywords(Array.isArray(data) ? data : []));
+      } catch (error) {
+        console.error("Failed to load keywords:", error);
+        if (!cancelled) {
+          showToast("Could not load your keywords.", "error");
+        }
+      } finally {
+        if (!cancelled) {
+          setKeywordsLoading(false);
+        }
+      }
+    }
+
+    void loadKeywords();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [showToast]);
+
+  async function addKeywordsFromInput() {
+    const incoming = keywordInput
+      .split(",")
+      .map(normalizeKeyword)
+      .filter(Boolean);
+
+    if (incoming.length === 0) return;
+
+    const existing = new Set(keywords.map((keyword) => keyword.toLowerCase()));
+    const pending = mergeKeywords(incoming).filter((keyword) => !existing.has(keyword.toLowerCase()));
+
+    if (pending.length === 0) {
+      setKeywordInput("");
+      return;
+    }
+
+    try {
+      setKeywordsSaving(true);
+
+      for (const keyword of pending) {
+        const res = await fetch("/api/user/keywords", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            username: USERNAME,
+            keyword,
+          }),
+        });
+
+        if (!res.ok) {
+          throw new Error(`Failed to save keyword (${res.status})`);
+        }
+      }
+
+      setKeywords((prev) => mergeKeywords([...prev, ...pending]));
+      setKeywordInput("");
+    } catch (error) {
+      console.error("Failed to save keywords:", error);
+      showToast("Could not save keyword.", "error");
+    } finally {
+      setKeywordsSaving(false);
+    }
+  }
+
+  async function removeKeyword(keywordToRemove: string) {
+    try {
+      setKeywordBeingRemoved(keywordToRemove);
+
+      const res = await fetch("/api/user/keywords", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          username: USERNAME,
+          keyword: keywordToRemove,
+        }),
+      });
+
+      if (!res.ok) {
+        throw new Error(`Failed to remove keyword (${res.status})`);
+      }
+
+      setKeywords((prev) =>
+        prev.filter((keyword) => keyword.toLowerCase() !== keywordToRemove.toLowerCase())
+      );
+    } catch (error) {
+      console.error("Failed to remove keyword:", error);
+      showToast("Could not remove keyword.", "error");
+    } finally {
+      setKeywordBeingRemoved(null);
+    }
+  }
 
   return (
     <div style={{ maxWidth: 680, margin: "0 auto", padding: "28px 24px 64px" }}>
@@ -458,7 +595,132 @@ export function SettingsPage() {
         </SectionCard>
       </div>
 
-      {/* ── Section 2: Appearance ── */}
+      {/* ── Section 2: Keywords ── */}
+      <div style={{ marginBottom: 32 }}>
+        <SectionLabel>Keywords</SectionLabel>
+        <SectionCard>
+          <div style={{ padding: "16px 18px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 14 }}>
+              <Tags style={{ width: 14, height: 14, color: "var(--sg-muted)" }} />
+              <span style={{ fontSize: 13.5, fontWeight: 500, color: "var(--sg-text)" }}>
+                Topics You Want More Of
+              </span>
+            </div>
+
+            <p style={{ fontSize: 12.5, color: "var(--sg-muted)", lineHeight: 1.6, margin: "0 0 12px 0" }}>
+              Add company names, sectors, technologies, or topics. Press Enter or separate multiple keywords with commas.
+            </p>
+
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+              <input
+                type="text"
+                value={keywordInput}
+                onChange={(e) => setKeywordInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === ",") {
+                    e.preventDefault();
+                    void addKeywordsFromInput();
+                  }
+                }}
+                placeholder="AI agents, OpenAI, semiconductors..."
+                disabled={keywordsLoading || keywordsSaving}
+                style={{
+                  flex: 1,
+                  minWidth: 220,
+                  fontSize: 13.5,
+                  color: "var(--sg-text)",
+                  backgroundColor: "var(--sg-surface-hover)",
+                  border: "1px solid var(--sg-border)",
+                  borderRadius: 8,
+                  padding: "10px 12px",
+                  outline: "none",
+                  fontFamily: "var(--font-inter, Inter, sans-serif)",
+                }}
+              />
+              <button
+                onClick={() => void addKeywordsFromInput()}
+                disabled={keywordsLoading || keywordsSaving}
+                style={{
+                  fontSize: 12.5,
+                  fontWeight: 600,
+                  color: "var(--sg-fab-color, #fff)",
+                  backgroundColor: "var(--sg-fab-bg, var(--sg-text))",
+                  border: "none",
+                  borderRadius: 8,
+                  padding: "10px 14px",
+                  cursor: keywordsLoading || keywordsSaving ? "not-allowed" : "pointer",
+                  whiteSpace: "nowrap",
+                  opacity: keywordsLoading || keywordsSaving ? 0.6 : 1,
+                }}
+              >
+                {keywordsSaving ? "Saving..." : "Add Keyword"}
+              </button>
+            </div>
+
+            <div
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                gap: 8,
+                marginTop: 14,
+                minHeight: keywords.length > 0 ? undefined : 22,
+              }}
+            >
+              {keywordsLoading ? (
+                <span style={{ fontSize: 12, color: "var(--sg-muted)" }}>
+                  Loading keywords...
+                </span>
+              ) : keywords.length > 0 ? (
+                keywords.map((keyword) => (
+                  <div
+                    key={keyword}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: 6,
+                      fontSize: 12.5,
+                      color: "var(--sg-text)",
+                      backgroundColor: "var(--sg-nav-active)",
+                      border: "1px solid var(--sg-border)",
+                      borderRadius: 999,
+                      padding: "6px 10px",
+                    }}
+                  >
+                    <span>{keyword}</span>
+                    <button
+                      onClick={() => void removeKeyword(keyword)}
+                      aria-label={`Remove ${keyword}`}
+                      disabled={keywordBeingRemoved === keyword}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        width: 16,
+                        height: 16,
+                        padding: 0,
+                        border: "none",
+                        background: "none",
+                        color: "var(--sg-muted)",
+                        cursor: keywordBeingRemoved === keyword ? "not-allowed" : "pointer",
+                        borderRadius: "50%",
+                        opacity: keywordBeingRemoved === keyword ? 0.5 : 1,
+                      }}
+                    >
+                      <X style={{ width: 11, height: 11 }} />
+                    </button>
+                  </div>
+                ))
+              ) : (
+                <span style={{ fontSize: 12, color: "var(--sg-muted)" }}>
+                  No keywords yet.
+                </span>
+              )}
+            </div>
+          </div>
+        </SectionCard>
+      </div>
+
+      {/* ── Section 3: Appearance ── */}
       <div style={{ marginBottom: 32 }}>
         <SectionLabel>Appearance</SectionLabel>
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -561,7 +823,7 @@ export function SettingsPage() {
         </div>
       </div>
 
-      {/* ── Section 3: Feed Schedule ── */}
+      {/* ── Section 4: Feed Schedule ── */}
       <div>
         <SectionLabel>Feed Schedule</SectionLabel>
         <SectionCard>

@@ -7,6 +7,7 @@ import {
   ReactNode,
   useCallback,
   useEffect,
+  useRef,
 } from "react";
 import {
   type Source,
@@ -31,10 +32,42 @@ export interface BookmarkedArticle {
   summaryMode: SummaryMode;
 }
 
+export type ArticleInteractionType =
+  | "article_click"
+  | "deep_dive_click"
+  | "bookmark_click"
+  | "link_click";
+
+export interface ArticleInteractionSummary {
+  articleId: string;
+  articleTitle: string;
+  articleUrl: string;
+  sourceId: string;
+  articleClicks: number;
+  deepDiveClicks: number;
+  bookmarkClicks: number;
+  linkClicks: number;
+  interactionScore: number;
+  lastEventAt: number;
+}
+
+export interface ArticleInteractionEvent {
+  id: string;
+  articleId: string;
+  articleTitle: string;
+  articleUrl: string;
+  sourceId: string;
+  type: ArticleInteractionType;
+  scoreDelta: number;
+  occurredAt: number;
+}
+
 export interface AppState {
   sources: ManagedSource[];
   bookmarks: BookmarkedArticle[];
   articles: Article[];
+  articleInteractions: Record<string, ArticleInteractionSummary>;
+  recentArticleInteractions: ArticleInteractionEvent[];
 }
 
 // ─── Actions ─────────────────────────────────────────────────────────────────
@@ -48,7 +81,28 @@ type AppAction =
   | { type: "UPSERT_BOOKMARK"; payload: BookmarkedArticle }
   | { type: "REMOVE_BOOKMARK"; payload: string }
   | { type: "UPDATE_ARTICLE_SUMMARY"; payload: { articleId: string; mode: SummaryMode; text: string } }
-  | { type: "PATCH_ARTICLE_SUMMARY"; payload: { articleId: string; mode: SummaryMode; text: string } };
+  | { type: "PATCH_ARTICLE_SUMMARY"; payload: { articleId: string; mode: SummaryMode; text: string } }
+  | { type: "TRACK_ARTICLE_INTERACTION"; payload: { article: Article; type: ArticleInteractionType } };
+
+const INTERACTION_SCORE_BY_TYPE: Record<ArticleInteractionType, number> = {
+  article_click: 1,
+  deep_dive_click: 4,
+  bookmark_click: 4,
+  link_click: 3,
+};
+
+const ARTICLE_INTERACTION_BEACON_ENDPOINT = "/api/user/activity";
+
+function buildArticleInteractionScoreMap(
+  interactions: Record<string, ArticleInteractionSummary>
+): Record<string, number> {
+  return Object.values(interactions).reduce<Record<string, number>>((acc, summary) => {
+    if (summary.articleUrl && summary.interactionScore > 0) {
+      acc[summary.articleUrl] = summary.interactionScore;
+    }
+    return acc;
+  }, {});
+}
 
 // ─── Reducer ─────────────────────────────────────────────────────────────────
 
@@ -188,6 +242,59 @@ function appReducer(state: AppState, action: AppAction): AppState {
       };
     }
 
+    case "TRACK_ARTICLE_INTERACTION": {
+      const { article, type } = action.payload;
+      const previous = state.articleInteractions[article.id] ?? {
+        articleId: article.id,
+        articleTitle: article.title,
+        articleUrl: article.url,
+        sourceId: article.sourceId,
+        articleClicks: 0,
+        deepDiveClicks: 0,
+        bookmarkClicks: 0,
+        linkClicks: 0,
+        interactionScore: 0,
+        lastEventAt: 0,
+      };
+      const scoreDelta = INTERACTION_SCORE_BY_TYPE[type];
+
+      const nextSummary: ArticleInteractionSummary = {
+        ...previous,
+        articleTitle: article.title,
+        articleUrl: article.url,
+        sourceId: article.sourceId,
+        articleClicks: previous.articleClicks + (type === "article_click" ? 1 : 0),
+        deepDiveClicks: previous.deepDiveClicks + (type === "deep_dive_click" ? 1 : 0),
+        bookmarkClicks: previous.bookmarkClicks + (type === "bookmark_click" ? 1 : 0),
+        linkClicks: previous.linkClicks + (type === "link_click" ? 1 : 0),
+        interactionScore: previous.interactionScore + scoreDelta,
+        lastEventAt: Date.now(),
+      };
+
+      const nextEvent: ArticleInteractionEvent = {
+        id: `${article.id}-${type}-${Date.now()}-${state.recentArticleInteractions.length}`,
+        articleId: article.id,
+        articleTitle: article.title,
+        articleUrl: article.url,
+        sourceId: article.sourceId,
+        type,
+        scoreDelta,
+        occurredAt: Date.now(),
+      };
+
+      return {
+        ...state,
+        articleInteractions: {
+          ...state.articleInteractions,
+          [article.id]: nextSummary,
+        },
+        recentArticleInteractions: [
+          nextEvent,
+          ...state.recentArticleInteractions,
+        ].slice(0, 200),
+      };
+    }
+
     default:
       return state;
   }
@@ -199,6 +306,8 @@ const initialState: AppState = {
   sources: [],
   bookmarks: [],
   articles: [],
+  articleInteractions: {},
+  recentArticleInteractions: [],
 };
 
 // ─── Context ─────────────────────────────────────────────────────────────────
@@ -214,6 +323,8 @@ interface AppStateContextValue {
   removeBookmark: (articleLink: string) => Promise<boolean>;
   isBookmarked: (articleId: string) => boolean;
   updateArticleSummary: (articleId: string, mode: SummaryMode, text: string) => void;
+  trackArticleInteraction: (article: Article, type: ArticleInteractionType) => void;
+  getArticleInteraction: (articleId: string) => ArticleInteractionSummary | null;
 }
 
 const AppStateContext = createContext<AppStateContextValue | null>(null);
@@ -274,6 +385,11 @@ function createBookmark(article: Article, source: Source, summaryMode: SummaryMo
 
 export function AppStateProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(appReducer, initialState);
+  const latestInteractionsRef = useRef(state.articleInteractions);
+
+  useEffect(() => {
+    latestInteractionsRef.current = state.articleInteractions;
+  }, [state.articleInteractions]);
 
   const addSource = useCallback(
     (source: Source) => dispatch({ type: "ADD_SOURCE", payload: source }),
@@ -357,6 +473,29 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       dispatch({ type: "UPDATE_ARTICLE_SUMMARY", payload: { articleId, mode, text } }),
     []
   );
+  const trackArticleInteraction = useCallback(
+    (article: Article, type: ArticleInteractionType) => {
+      const current = latestInteractionsRef.current[article.id];
+      const scoreDelta = INTERACTION_SCORE_BY_TYPE[type];
+      const nextScore = (current?.interactionScore ?? 0) + scoreDelta;
+
+      console.log("[signal] article interaction", {
+        articleId: article.id,
+        articleTitle: article.title,
+        articleUrl: article.url,
+        type,
+        scoreDelta,
+        nextScore,
+      });
+
+      dispatch({ type: "TRACK_ARTICLE_INTERACTION", payload: { article, type } });
+    },
+    []
+  );
+  const getArticleInteraction = useCallback(
+    (articleId: string) => state.articleInteractions[articleId] ?? null,
+    [state.articleInteractions]
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -386,6 +525,46 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  useEffect(() => {
+    function flushArticleInteractionScores() {
+      const activity = buildArticleInteractionScoreMap(latestInteractionsRef.current);
+      if (Object.keys(activity).length === 0) {
+        return;
+      }
+
+      const payload = {
+        username: "rohil",
+        activity,
+      };
+
+      console.log("[signal] article interaction beacon payload", payload);
+
+      if (!ARTICLE_INTERACTION_BEACON_ENDPOINT || typeof navigator === "undefined") {
+        return;
+      }
+
+      const body = JSON.stringify(payload);
+      navigator.sendBeacon(
+        ARTICLE_INTERACTION_BEACON_ENDPOINT,
+        new Blob([body], { type: "application/json" })
+      );
+    }
+
+    function handleVisibilityChange() {
+      if (document.visibilityState === "hidden") {
+        flushArticleInteractionScores();
+      }
+    }
+
+    window.addEventListener("pagehide", flushArticleInteractionScores);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("pagehide", flushArticleInteractionScores);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, []);
+
   return (
     <AppStateContext.Provider
       value={{
@@ -399,6 +578,8 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         removeBookmark,
         isBookmarked,
         updateArticleSummary,
+        trackArticleInteraction,
+        getArticleInteraction,
       }}
     >
       {children}

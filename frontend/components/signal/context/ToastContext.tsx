@@ -27,7 +27,7 @@ const ToastContext = createContext<ToastContextValue | null>(null);
 
 function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }) {
   const [visible, setVisible] = useState(false);
-  const timerRef = useRef<ReturnType<typeof setTimeout>>();
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     // Animate in
@@ -39,7 +39,11 @@ function ToastItem({ toast, onDismiss }: { toast: Toast; onDismiss: () => void }
       setTimeout(onDismiss, 220);
     }, 3500);
 
-    return () => clearTimeout(timerRef.current);
+    return () => {
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+      }
+    };
   }, [onDismiss]);
 
   const iconMap: Record<ToastType, React.ReactNode> = {

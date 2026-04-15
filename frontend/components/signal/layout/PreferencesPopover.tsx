@@ -4,7 +4,6 @@ import * as Popover from "@radix-ui/react-popover";
 import * as Slider from "@radix-ui/react-slider";
 import { Settings2 } from "lucide-react";
 import { usePreferences, FontFamily, Density, ViewMode } from "../context/PreferencesContext";
-import { cn } from "@/lib/utils";
 
 // ─── Shared segment button style ────────────────────────────────────────────
 

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Routes, Route } from "react-router-dom";
+import { Routes, Route, Navigate } from "react-router-dom";
 import { usePreferences } from "../context/PreferencesContext";
 import { Sidebar } from "./Sidebar";
 import { Toolbar } from "./Toolbar";
@@ -79,6 +79,7 @@ export function AppLayout() {
         >
           <Routes>
             <Route path="/" element={<DashboardPage />} />
+            <Route path="/keywords" element={<Navigate to="/" replace />} />
             <Route path="/saved" element={<SavedPage />} />
             <Route path="/sources" element={<SourcesPage />} />
             <Route path="/settings" element={<SettingsPage />} />
