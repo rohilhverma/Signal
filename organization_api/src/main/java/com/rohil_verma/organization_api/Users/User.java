@@ -1,11 +1,16 @@
-package com.rohil_verma.organization_api.postgres_stuff;
+package com.rohil_verma.organization_api.Users;
 
 import java.time.LocalTime;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+
+import org.springframework.security.core.GrantedAuthority;
+import org.springframework.security.core.userdetails.UserDetails;
 
 import jakarta.persistence.CascadeType;
 import jakarta.persistence.Column;
@@ -19,7 +24,7 @@ import jakarta.persistence.Table;
 
 @Entity
 @Table(name = "app_users")
-public class User {
+public class User implements UserDetails {
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -71,14 +76,21 @@ public class User {
     public Integer getId() { return id; }
     public void setId(Integer id) { this.id = id; }
 
+    @Override
     public String getUsername() { return username; }
     public void setUsername(String username) { this.username = username; }
 
     public String getEmail() { return email; }
     public void setEmail(String email) { this.email = email; }
 
+    @Override
     public String getPassword() { return password; }
     public void setPassword(String password) { this.password = password; }
+
+    @Override
+    public Collection<? extends GrantedAuthority> getAuthorities() {
+        return Collections.emptyList();
+    }
 
     public LocalTime getUserUpdateTime() { return userUpdateTime; }
     public void setUserUpdateTime(LocalTime userUpdateTime) { this.userUpdateTime = userUpdateTime; }

@@ -1,4 +1,4 @@
-package com.rohil_verma.organization_api;
+package com.rohil_verma.organization_api.DynamoDB;
 
 import java.util.List;
 
@@ -9,8 +9,6 @@ import org.springframework.stereotype.Service;
 // import com.rohil_verma.organization_api.postgres_stuff.LinksRepository;
 
 import io.awspring.cloud.sqs.operations.SqsTemplate;
-
-
 
 @Service
 public class MessageSender {

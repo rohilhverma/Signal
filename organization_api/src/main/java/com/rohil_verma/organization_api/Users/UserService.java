@@ -1,4 +1,4 @@
-package com.rohil_verma.organization_api.postgres_stuff;
+package com.rohil_verma.organization_api.Users;
 
 import java.util.List;
 import java.util.Map;
@@ -9,12 +9,12 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import com.rohil_verma.organization_api.MessageSender;
+import com.rohil_verma.organization_api.DynamoDB.MessageSender;
 import com.rohil_verma.organization_api.UserActivity;
 
 @Service
 @Transactional
-public class LinksService {
+public class UserService {
 
     @Autowired
     private UserRepository userRepository;
@@ -39,6 +39,12 @@ public class LinksService {
         return subscriptionRepository.findAll().stream()
             .map(Subscription::getWebsiteURL)
             .distinct()
+            .toList();
+    }
+
+    public List<String> getAllUsers() {
+        return userRepository.findAll().stream()
+            .map(User::getUsername)
             .toList();
     }
 

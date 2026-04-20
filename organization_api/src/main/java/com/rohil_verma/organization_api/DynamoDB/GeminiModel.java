@@ -1,4 +1,4 @@
-package com.rohil_verma.organization_api.postgres_stuff;
+package com.rohil_verma.organization_api.DynamoDB;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;

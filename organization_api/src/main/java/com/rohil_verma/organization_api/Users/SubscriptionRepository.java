@@ -1,4 +1,4 @@
-package com.rohil_verma.organization_api.postgres_stuff;
+package com.rohil_verma.organization_api.Users;
 
 import org.springframework.data.jpa.repository.JpaRepository;
 

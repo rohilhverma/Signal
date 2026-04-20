@@ -365,6 +365,7 @@ function createFallbackBookmark(articleTitle: string, articleLink: string): Book
       summaryDefault,
       summaryDeepDive: null,
       publishedAt: new Date(),
+      processedAt: new Date(),
       originalWordCount: 0,
       summaryWordCount: summaryDefault.split(/\s+/).filter(Boolean).length,
     },

@@ -47,8 +47,12 @@ function formatNumber(n: number): string {
 
 type AgeState = "new" | "read" | "expired";
 
+function getArticleFreshnessDate(article: Article): Date {
+  return article.processedAt;
+}
+
 function getAgeState(article: Article, seenIds: Set<string>): AgeState {
-  const ageHours = (Date.now() - article.publishedAt.getTime()) / (1000 * 60 * 60);
+  const ageHours = (Date.now() - getArticleFreshnessDate(article).getTime()) / (1000 * 60 * 60);
   if (ageHours >= 24) return "expired";
   if (seenIds.has(article.id)) return "read";
   return "new";
@@ -71,6 +75,8 @@ type KeywordArticleMatch = {
   matchedTerms: string[];
   score: number;
 };
+
+const KEYWORD_VISIBLE_ARTICLE_LIMIT = 8;
 
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -126,6 +132,43 @@ function scoreArticleForKeyword(article: Article, keyword: string): KeywordArtic
     matchedTerms,
     score,
   };
+}
+
+function getVisibleKeywordArticleMatches(
+  articles: Article[],
+  keyword: string
+): Array<{ article: Article; match: KeywordArticleMatch }> {
+  const rankedMatches = articles
+    .filter((article) => (Date.now() - getArticleFreshnessDate(article).getTime()) / (1000 * 60 * 60) < 24)
+    .map((article) => ({
+      article,
+      match: scoreArticleForKeyword(article, keyword),
+    }))
+    .filter((entry): entry is { article: Article; match: KeywordArticleMatch } => entry.match !== null)
+    .sort((left, right) => {
+      if (right.match.score !== left.match.score) {
+        return right.match.score - left.match.score;
+      }
+      return right.article.publishedAt.getTime() - left.article.publishedAt.getTime();
+    });
+
+  const visibleMatches: Array<{ article: Article; match: KeywordArticleMatch }> = [];
+  const seenArticleIds = new Set<string>();
+
+  for (const entry of rankedMatches) {
+    if (seenArticleIds.has(entry.article.id)) {
+      continue;
+    }
+
+    seenArticleIds.add(entry.article.id);
+    visibleMatches.push(entry);
+
+    if (visibleMatches.length >= KEYWORD_VISIBLE_ARTICLE_LIMIT) {
+      break;
+    }
+  }
+
+  return visibleMatches;
 }
 
 // Extract the summary text from a raw Gemini JSON response or plain string.
@@ -1397,7 +1440,7 @@ export function DashboardPage() {
         }
         const response = await res.json() as Record<
           string,
-          { siteName: string | null; paywall: string | null; articles: Array<Record<string, { date: string; link: string; summaryDefault: string; summaryShort: string; summaryLong: string }>> }
+          { siteName: string | null; paywall: string | null; articles: Array<Record<string, { date: string; processedAt: string; link: string; summaryDefault: string; summaryShort: string; summaryLong: string }>> }
         >;
 
         if (cancelled) return;
@@ -1435,6 +1478,7 @@ export function DashboardPage() {
                 summaryShort: extractSummaryText(fields.summaryShort),
                 summaryDeepDive: extractSummaryText(fields.summaryLong),
                 publishedAt: new Date(fields.date),
+                processedAt: new Date(fields.processedAt),
                 originalWordCount: 0,
                 summaryWordCount: (extractSummaryText(fields.summaryDefault) ?? "")
                   .split(/\s+/)
@@ -1448,11 +1492,13 @@ export function DashboardPage() {
         setArticles(derivedArticles);
 
         const lastVisit = lastVisitRef.current;
-        const newIds = new Set(derivedArticles.filter((a) => a.publishedAt > lastVisit).map((a) => a.id));
+        const newIds = new Set(derivedArticles.filter((a) => getArticleFreshnessDate(a) > lastVisit).map((a) => a.id));
         setNewSinceLastVisit(newIds);
 
         const visibleIds = new Set(
-          derivedArticles.filter((a) => (Date.now() - a.publishedAt.getTime()) / (1000 * 60 * 60) < 24).map((a) => a.id)
+          derivedArticles
+            .filter((a) => (Date.now() - getArticleFreshnessDate(a).getTime()) / (1000 * 60 * 60) < 24)
+            .map((a) => a.id)
         );
         const previouslySeen = new Set([...visibleIds].filter((id) => !newIds.has(id)));
         setSeenIds(previouslySeen);
@@ -1567,24 +1613,11 @@ export function DashboardPage() {
       return [];
     }
 
-    return articles
-      .filter((article) => (Date.now() - article.publishedAt.getTime()) / (1000 * 60 * 60) < 24)
-      .map((article) => ({
-        article,
-        match: scoreArticleForKeyword(article, selectedKeyword),
-      }))
-      .filter((entry): entry is { article: Article; match: KeywordArticleMatch } => entry.match !== null)
-      .sort((left, right) => {
-        if (right.match.score !== left.match.score) {
-          return right.match.score - left.match.score;
-        }
-        return right.article.publishedAt.getTime() - left.article.publishedAt.getTime();
-      })
-      .slice(0, 8);
+    return getVisibleKeywordArticleMatches(articles, selectedKeyword);
   }, [articles, dashboardMode, selectedKeyword]);
 
   const filteredArticles = useMemo(() => {
-    const nonExpired = articles.filter((a) => (Date.now() - a.publishedAt.getTime()) / (1000 * 60 * 60) < 24);
+    const nonExpired = articles.filter((a) => (Date.now() - getArticleFreshnessDate(a).getTime()) / (1000 * 60 * 60) < 24);
     if (dashboardMode !== "keyword") return nonExpired;
     return keywordRankedArticles.map((entry) => entry.article);
   }, [articles, dashboardMode, keywordRankedArticles]);
@@ -1650,10 +1683,7 @@ export function DashboardPage() {
     () =>
       keywords.map((keyword) => ({
         keyword,
-        count: articles.filter((article) => {
-          const ageHours = (Date.now() - article.publishedAt.getTime()) / (1000 * 60 * 60);
-          return ageHours < 24 && scoreArticleForKeyword(article, keyword) !== null;
-        }).length,
+        count: getVisibleKeywordArticleMatches(articles, keyword).length,
       })),
     [articles, keywords]
   );
@@ -1977,7 +2007,7 @@ export function DashboardPage() {
                 : dashboardMode !== "keyword"
                   ? `${stats.articleCount} articles across ${stats.sourceCount} sources`
                   : selectedKeyword
-                    ? `${stats.articleCount} articles across ${stats.sourceCount} sources for "${selectedKeyword}"`
+                    ? `${stats.articleCount} visible articles across ${stats.sourceCount} sources for "${selectedKeyword}" within the last 24 hours`
                     : "Choose a keyword to focus your feed"}
             </span>
             {today && (

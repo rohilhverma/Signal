@@ -4,7 +4,7 @@ import java.time.LocalDateTime;
 
 import org.hibernate.annotations.CreationTimestamp;
 
-import com.rohil_verma.organization_api.postgres_stuff.User;
+import com.rohil_verma.organization_api.Users.User;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
 

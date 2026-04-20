@@ -21,6 +21,7 @@ export interface Article {
   summaryDefault: string;
   summaryDeepDive: string | null;
   publishedAt: Date;
+  processedAt: Date;
   originalWordCount: number;
   summaryWordCount: number;
 }

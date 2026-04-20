@@ -143,6 +143,7 @@ async function newArticle(item, summary, mode){
             summary: summaryArr,
             articleText: item.articleText,
             date: item.date,
+            processedAt: new Date().toISOString(),
             ttl: week,
             paywall: item.paywall
         }
@@ -252,7 +253,10 @@ async function initialScraper(url,mode="default") {
         const $home = cheerio.load(homeResp.data)
         webName = $home('meta[property="og:site_name"]').attr('content')?.trim() || null
     } catch(e) {}
-    if (!webName) webName = $(formats[format].websiteTitle).text().trim() || cleanURL.hostname.replace('www.', '')
+    if (!webName) {
+        const rssTitle = $(formats[format].websiteTitle).text().trim()
+        webName = (rssTitle && rssTitle.length <= 40) ? rssTitle : cleanURL.hostname.replace('www.', '')
+    }
     await dynamo.send(new UpdateCommand({
         TableName: TABLE,
         Key: { websiteURLs: cleanURL.origin, SK: SK.RSS },
@@ -321,6 +325,7 @@ async function initialScraper(url,mode="default") {
             title_:title,
             articleText: articleTextAndTime.articleText,
             date:articleTextAndTime.publishDate,
+            processedAt: new Date().toISOString(),
             paywall: articleTextAndTime.paywallStatus
         }
         scrapedCount+=1

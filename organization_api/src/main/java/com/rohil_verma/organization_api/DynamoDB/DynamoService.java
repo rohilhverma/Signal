@@ -1,4 +1,4 @@
-package com.rohil_verma.organization_api.postgres_stuff;
+package com.rohil_verma.organization_api.DynamoDB;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -13,6 +13,8 @@ import org.springframework.stereotype.Service;
 
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
+import com.rohil_verma.organization_api.Users.UserService;
+import com.rohil_verma.organization_api.Website.WebsiteContent;
 
 import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
 import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
@@ -27,7 +29,7 @@ import static java.util.Map.entry;
 public class DynamoService{
 
     @Autowired
-    private LinksService linksService;
+    private UserService userService;
     
     @Autowired
     private DynamoDbClient dynamoDbClient;
@@ -46,7 +48,7 @@ public class DynamoService{
     .build();
 
     public Map<String, WebsiteContent> getUserContent(String username){
-        List<String> userWebsites= linksService.getWebsitesForUser(username);
+        List<String> userWebsites= userService.getWebsitesForUser(username);
 
         Map<String, WebsiteContent> returnMap = new HashMap<>();
 
@@ -74,11 +76,12 @@ public class DynamoService{
                     continue;
                 }
 
-                if (item.get("title") == null || item.get("summary") == null|| item.get("date") == null || item.get("articleText") == null) continue;
+                if (item.get("title") == null || item.get("summary") == null|| item.get("date") == null || item.get("articleText") == null || item.get("processedAt") == null) continue;
 
                 List<AttributeValue> summaryList = item.get("summary").l();
                 Map<String, String> articleContents = new HashMap<>();
                 articleContents.put("date", item.get("date").s());
+                articleContents.put("processedAt", item.get("processedAt").s());
                 articleContents.put("link", item.get("SK").s());
                 articleContents.put("summaryDefault", summaryList.size() > 1 ? summaryList.get(1).s() : "");
                 articleContents.put("summaryShort",   summaryList.size() > 0 ? summaryList.get(0).s() : "");

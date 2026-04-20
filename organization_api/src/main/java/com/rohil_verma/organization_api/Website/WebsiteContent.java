@@ -1,4 +1,4 @@
-package com.rohil_verma.organization_api.postgres_stuff;
+package com.rohil_verma.organization_api.Website;
 
 import java.util.List;
 import java.util.Map;
