@@ -22,6 +22,7 @@ import {
   type SummaryMode,
   DEFAULT_ACCENT,
 } from "../data/mockArticles";
+import { useAuth } from "../context/AuthContext";
 import { usePreferences } from "../context/PreferencesContext";
 import { useAppState, type ManagedSource } from "../context/AppStateContext";
 import { useToast } from "../context/ToastContext";
@@ -43,6 +44,70 @@ function estimateReadTime(wordCount: number): string {
 
 function formatNumber(n: number): string {
   return n.toLocaleString();
+}
+
+function parsePreferredTime(value: string): { hours: number; minutes: number } {
+  const match = value.match(/^(\d{1,2}):(\d{2})\s+(AM|PM)$/i);
+  if (!match) {
+    return { hours: 7, minutes: 0 };
+  }
+
+  let hours = Number.parseInt(match[1], 10) % 12;
+  const minutes = Number.parseInt(match[2], 10);
+  const meridiem = match[3].toUpperCase();
+
+  if (meridiem === "PM") {
+    hours += 12;
+  }
+
+  return { hours, minutes };
+}
+
+function setTimeOnDate(base: Date, value: string): Date {
+  const { hours, minutes } = parsePreferredTime(value);
+  const next = new Date(base);
+  next.setHours(hours, minutes, 0, 0);
+  return next;
+}
+
+function formatScheduleTime(date: Date): string {
+  return date.toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function formatNextUpdateAvailability(date: Date): string {
+  const now = new Date();
+  const startOfToday = new Date(now);
+  startOfToday.setHours(0, 0, 0, 0);
+
+  const startOfTarget = new Date(date);
+  startOfTarget.setHours(0, 0, 0, 0);
+
+  const diffDays = Math.round((startOfTarget.getTime() - startOfToday.getTime()) / (1000 * 60 * 60 * 24));
+
+  if (diffDays === 0) {
+    return `Today at ${formatScheduleTime(date)}`;
+  }
+
+  if (diffDays === 1) {
+    return `Tomorrow at ${formatScheduleTime(date)}`;
+  }
+
+  return date.toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function formatLastUpdated(date: Date): string {
+  return `${formatHoursAgo(date)} • ${date.toLocaleTimeString("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+  })}`;
 }
 
 type AgeState = "new" | "read" | "expired";
@@ -1351,6 +1416,37 @@ type ArticleSummaryCache = Map<string, Partial<Record<SummaryMode, string>>>;
 
 type DashboardMode = "default" | "keyword";
 
+type DashboardArticleFields = {
+  date: string;
+  processedAt: string;
+  link: string;
+  summaryDefault: string;
+  summaryShort: string;
+  summaryLong: string;
+};
+
+type DashboardWebsiteResponse = Record<
+  string,
+  {
+    siteName: string | null;
+    paywall: string | null;
+    articles: Array<Record<string, DashboardArticleFields>>;
+  }
+>;
+
+type DashboardFeedSnapshot = {
+  sources: Source[];
+  articles: Article[];
+  articleCount: number;
+  lastProcessedAtMs: number | null;
+};
+
+type FeedPollState = {
+  startedAtMs: number;
+  baselineArticleCount: number;
+  baselineLastProcessedAtMs: number | null;
+};
+
 const DASHBOARD_MODES: { key: DashboardMode; label: string }[] = [
   { key: "default", label: "Default" },
   { key: "keyword", label: "Keyword" },
@@ -1358,7 +1454,8 @@ const DASHBOARD_MODES: { key: DashboardMode; label: string }[] = [
 
 export function DashboardPage() {
   const navigate = useNavigate();
-  const { density, viewMode } = usePreferences();
+  const { density, viewMode, preferredUpdateTime } = usePreferences();
+  const { authenticatedFetch, user } = useAuth();
   const { state: appState, saveBookmark, removeBookmark, isBookmarked, addSource, setArticles, patchArticleSummary: patchArticle, trackArticleInteraction } = useAppState();
   const { showToast } = useToast();
 
@@ -1385,13 +1482,14 @@ export function DashboardPage() {
   const [keywords, setKeywords] = useState<string[]>([]);
   const [selectedKeyword, setSelectedKeyword] = useState<string | null>(null);
   const [dashboardMode, setDashboardMode] = useState<DashboardMode>("default");
+  const [feedPollState, setFeedPollState] = useState<FeedPollState | null>(null);
 
   useEffect(() => {
     let cancelled = false;
 
     async function loadKeywords() {
       try {
-        const res = await fetch("/api/user/keywords?username=rohil");
+        const res = await authenticatedFetch("/api/user/keywords");
         if (!res.ok) return;
 
         const payload = (await res.json()) as string[];
@@ -1412,7 +1510,7 @@ export function DashboardPage() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [authenticatedFetch]);
 
   useEffect(() => {
     if (dashboardMode !== "keyword") {
@@ -1426,99 +1524,139 @@ export function DashboardPage() {
     });
   }, [dashboardMode, keywords]);
 
+  const fetchDashboardSnapshot = useCallback(async (): Promise<DashboardFeedSnapshot> => {
+    const res = await authenticatedFetch("/api/user/website");
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Backend error ${res.status}: ${text}`);
+    }
+
+    const response = await res.json() as DashboardWebsiteResponse;
+
+    const derivedSources: Source[] = await Promise.all(
+      Object.keys(response).map(async (sourceUrl) => {
+        const hostname = new URL(sourceUrl).hostname.replace(/^www\./, "");
+        const existingSource = sources.find((source) => source.id === sourceUrl);
+
+        let faviconUrl = existingSource?.faviconUrl ?? `https://www.google.com/s2/favicons?sz=64&domain=${hostname}`;
+        let accentColor = existingSource?.accentColor ?? DEFAULT_ACCENT;
+
+        if (!existingSource) {
+          try {
+            const fav = await fetch(`/api/favicon?domain=${hostname}`).then((r) => r.json()) as { faviconUrl: string; color: string };
+            faviconUrl = fav.faviconUrl;
+            accentColor = fav.color;
+          } catch {}
+        }
+
+        return {
+          id: sourceUrl,
+          name: response[sourceUrl].siteName ?? hostname.split(".")[0].replace(/^\w/, (c) => c.toUpperCase()),
+          domain: hostname,
+          faviconUrl,
+          accentColor,
+          paywall: response[sourceUrl].paywall,
+        };
+      })
+    );
+
+    const derivedArticles: Article[] = Object.entries(response).flatMap(
+      ([sourceUrl, { articles: articleList }]) =>
+        articleList.flatMap((articleEntry) =>
+          Object.entries(articleEntry).map(([title, fields]) => ({
+            id: fields.link,
+            sourceId: sourceUrl,
+            title,
+            url: fields.link,
+            summaryDefault: extractSummaryText(fields.summaryDefault) ?? "",
+            summaryShort: extractSummaryText(fields.summaryShort),
+            summaryDeepDive: extractSummaryText(fields.summaryLong),
+            publishedAt: new Date(fields.date),
+            processedAt: new Date(fields.processedAt),
+            originalWordCount: 0,
+            summaryWordCount: (extractSummaryText(fields.summaryDefault) ?? "")
+              .split(/\s+/)
+              .filter(Boolean)
+              .length,
+          }))
+        )
+    );
+
+    const lastProcessedAtMs = derivedArticles.reduce<number | null>((latest, article) => {
+      const current = getArticleFreshnessDate(article).getTime();
+      if (latest === null || current > latest) {
+        return current;
+      }
+      return latest;
+    }, null);
+
+    return {
+      sources: derivedSources,
+      articles: derivedArticles,
+      articleCount: derivedArticles.length,
+      lastProcessedAtMs,
+    };
+  }, [authenticatedFetch, sources]);
+
+  const applyDashboardSnapshot = useCallback((snapshot: DashboardFeedSnapshot) => {
+    snapshot.sources.forEach((source) => addSource(source));
+    setArticles(snapshot.articles);
+
+    const lastVisit = lastVisitRef.current;
+    const nextNewIds = new Set(
+      snapshot.articles
+        .filter((article) => getArticleFreshnessDate(article) > lastVisit)
+        .map((article) => article.id)
+    );
+    setNewSinceLastVisit(nextNewIds);
+
+    const visibleIds = new Set(
+      snapshot.articles
+        .filter((article) => (Date.now() - getArticleFreshnessDate(article).getTime()) / (1000 * 60 * 60) < 24)
+        .map((article) => article.id)
+    );
+    const nextSeenIds = new Set([...visibleIds].filter((id) => !nextNewIds.has(id)));
+    setSeenIds(nextSeenIds);
+
+    setSummaryCache((previousCache) => {
+      const nextCache: ArticleSummaryCache = new Map();
+      for (const article of snapshot.articles) {
+        nextCache.set(article.id, {
+          ...previousCache.get(article.id),
+          default: article.summaryDefault,
+        });
+      }
+      return nextCache;
+    });
+
+    lastVisitRef.current = new Date();
+  }, [addSource, setArticles]);
+
   // Fetch / load data
   useEffect(() => {
     if (sources.length > 0) return;
     let cancelled = false;
+
     async function load() {
       setLoading(true);
       try {
-        const res = await fetch("/api/user/website?username=rohil");
-        if (!res.ok) {
-          const text = await res.text();
-          throw new Error(`Backend error ${res.status}: ${text}`);
-        }
-        const response = await res.json() as Record<
-          string,
-          { siteName: string | null; paywall: string | null; articles: Array<Record<string, { date: string; processedAt: string; link: string; summaryDefault: string; summaryShort: string; summaryLong: string }>> }
-        >;
-
+        const snapshot = await fetchDashboardSnapshot();
         if (cancelled) return;
-
-        const derivedSources: Source[] = await Promise.all(
-          Object.keys(response).map(async (sourceUrl) => {
-            const hostname = new URL(sourceUrl).hostname.replace(/^www\./, "");
-            let faviconUrl = `https://www.google.com/s2/favicons?sz=64&domain=${hostname}`;
-            let accentColor = DEFAULT_ACCENT;
-            try {
-              const fav = await fetch(`/api/favicon?domain=${hostname}`).then((r) => r.json()) as { faviconUrl: string; color: string };
-              faviconUrl = fav.faviconUrl;
-              accentColor = fav.color;
-            } catch {}
-            return {
-              id: sourceUrl,
-              name: response[sourceUrl].siteName ?? hostname.split(".")[0].replace(/^\w/, (c) => c.toUpperCase()),
-              domain: hostname,
-              faviconUrl,
-              accentColor,
-              paywall: response[sourceUrl].paywall,
-            };
-          })
-        );
-
-        const derivedArticles: Article[] = Object.entries(response).flatMap(
-          ([sourceUrl, { articles: articleList }]) =>
-            articleList.flatMap((articleEntry) =>
-              Object.entries(articleEntry).map(([title, fields]) => ({
-                id: fields.link,
-                sourceId: sourceUrl,
-                title,
-                url: fields.link,
-                summaryDefault: extractSummaryText(fields.summaryDefault) ?? "",
-                summaryShort: extractSummaryText(fields.summaryShort),
-                summaryDeepDive: extractSummaryText(fields.summaryLong),
-                publishedAt: new Date(fields.date),
-                processedAt: new Date(fields.processedAt),
-                originalWordCount: 0,
-                summaryWordCount: (extractSummaryText(fields.summaryDefault) ?? "")
-                  .split(/\s+/)
-                  .filter(Boolean)
-                  .length,
-              }))
-            )
-        );
-
-        derivedSources.forEach((s) => addSource(s));
-        setArticles(derivedArticles);
-
-        const lastVisit = lastVisitRef.current;
-        const newIds = new Set(derivedArticles.filter((a) => getArticleFreshnessDate(a) > lastVisit).map((a) => a.id));
-        setNewSinceLastVisit(newIds);
-
-        const visibleIds = new Set(
-          derivedArticles
-            .filter((a) => (Date.now() - getArticleFreshnessDate(a).getTime()) / (1000 * 60 * 60) < 24)
-            .map((a) => a.id)
-        );
-        const previouslySeen = new Set([...visibleIds].filter((id) => !newIds.has(id)));
-        setSeenIds(previouslySeen);
-
-        const cache: ArticleSummaryCache = new Map();
-        for (const a of derivedArticles) {
-          cache.set(a.id, { default: a.summaryDefault });
-        }
-        setSummaryCache(cache);
-
-        setLoading(false);
-        lastVisitRef.current = new Date();
+        applyDashboardSnapshot(snapshot);
       } catch (err) {
         console.error("Failed to load articles:", err);
-        if (!cancelled) setLoading(false);
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
       }
     }
-    load();
-    return () => { cancelled = true; };
-  }, [sources.length]);
+
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [applyDashboardSnapshot, fetchDashboardSnapshot, sources.length]);
 
   // Handle summary mode change — fetch if not already cached
   const handleSummaryModeChange = useCallback(
@@ -1559,9 +1697,8 @@ export function DashboardPage() {
         // Map frontend mode to backend prompt key
         const backendMode = mode === "short" ? "shorter" : "longer";
 
-        const res = await fetch("/api/user/url/resummarization", {
+        const res = await authenticatedFetch("/api/user/url/resummarization", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ websiteURL: article.sourceId, articleLink: article.url, websiteContentMode: backendMode }),
         });
 
@@ -1604,7 +1741,7 @@ export function DashboardPage() {
         });
       }
     },
-    [summaryCache, loadingModesByArticle, articles, patchArticle, showToast, trackArticleInteraction]
+    [authenticatedFetch, summaryCache, loadingModesByArticle, articles, patchArticle, showToast, trackArticleInteraction]
   );
 
   // Computed stats
@@ -1759,28 +1896,208 @@ export function DashboardPage() {
     setToday(new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" }));
   }, []);
 
-  const [pendingUpdate, setPendingUpdate] = useState(() =>
-    typeof window !== "undefined" && localStorage.getItem("pendingFeedUpdate") === "true"
-  );
+  const pendingFeedUpdateStorageKey = user ? `signal.pendingFeedUpdate:${user.username}` : "";
+  const lastFeedUpdateRequestStorageKey = user ? `signal.lastFeedUpdateRequest:${user.username}` : "";
+  const [pendingUpdate, setPendingUpdate] = useState(false);
+  const [lastFeedUpdateRequestAt, setLastFeedUpdateRequestAt] = useState<Date | null>(null);
   const [updating, setUpdating] = useState(false);
+  const [currentTimeMs, setCurrentTimeMs] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !user) {
+      setPendingUpdate(false);
+      setLastFeedUpdateRequestAt(null);
+      return;
+    }
+
+    setPendingUpdate(window.localStorage.getItem(pendingFeedUpdateStorageKey) === "true");
+
+    const rawLastRequestedAt = window.localStorage.getItem(lastFeedUpdateRequestStorageKey);
+    if (!rawLastRequestedAt) {
+      setLastFeedUpdateRequestAt(null);
+      return;
+    }
+
+    const parsed = new Date(rawLastRequestedAt);
+    setLastFeedUpdateRequestAt(Number.isNaN(parsed.getTime()) ? null : parsed);
+  }, [lastFeedUpdateRequestStorageKey, pendingFeedUpdateStorageKey, user]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      setCurrentTimeMs(Date.now());
+    }, 60 * 1000);
+
+    return () => window.clearInterval(interval);
+  }, []);
+
+  const lastFeedUpdatedAt = useMemo(() => {
+    if (articles.length === 0) return null;
+
+    return articles.reduce<Date | null>((latest, article) => {
+      const current = getArticleFreshnessDate(article);
+      if (!latest || current > latest) {
+        return current;
+      }
+      return latest;
+    }, null);
+  }, [articles]);
+
+  const lastFeedDisplayAt = useMemo(
+    () => lastFeedUpdatedAt ?? lastFeedUpdateRequestAt,
+    [lastFeedUpdateRequestAt, lastFeedUpdatedAt]
+  );
+  const isFeedRefreshing = updating || feedPollState !== null;
+
+  const feedUpdateStatus = useMemo(() => {
+    if (sources.length === 0) {
+      return null;
+    }
+
+    const now = new Date(currentTimeMs);
+    const todayPreferredTime = setTimeOnDate(now, preferredUpdateTime);
+    const nextScheduledUpdate = now < todayPreferredTime
+      ? todayPreferredTime
+      : setTimeOnDate(new Date(now.getTime() + 24 * 60 * 60 * 1000), preferredUpdateTime);
+
+    const canBootstrapFeed = articles.length === 0 && lastFeedUpdateRequestAt === null;
+    const nextUpdateLabel = `Next update available ${formatNextUpdateAvailability(nextScheduledUpdate)}.`;
+
+    if (isFeedRefreshing) {
+      return {
+        kind: "progress" as const,
+        label: "Updating feed…",
+        title: "Fetching the latest briefing. New articles will appear automatically when the update finishes.",
+      };
+    }
+
+    if (canBootstrapFeed) {
+      return {
+        kind: "button" as const,
+        label: "Update Feed",
+        title: pendingUpdate
+          ? "You added sources. Generate the first daily briefing when you're ready."
+          : "Generate your first daily briefing to start populating the feed.",
+      };
+    }
+
+    if (!lastFeedUpdateRequestAt || lastFeedUpdateRequestAt < todayPreferredTime) {
+      if (now >= todayPreferredTime) {
+        return {
+          kind: "button" as const,
+          label: "Update Feed",
+          title: pendingUpdate
+            ? "You added sources. Update the feed to roll them into today's briefing."
+            : "Update the feed when you're ready for today's recap.",
+        };
+      }
+
+      return {
+        kind: "status" as const,
+        label: lastFeedDisplayAt
+          ? `Last updated ${formatLastUpdated(lastFeedDisplayAt)}`
+          : `Next update ${formatNextUpdateAvailability(nextScheduledUpdate)}`,
+        title: pendingUpdate
+          ? `New sources are queued for the next scheduled briefing. ${nextUpdateLabel}`
+          : `Your feed is set to refresh on the daily schedule. ${nextUpdateLabel}`,
+      };
+    }
+
+    return {
+      kind: "status" as const,
+      label: lastFeedDisplayAt
+        ? `Last updated ${formatLastUpdated(lastFeedDisplayAt)}`
+        : `Next update ${formatNextUpdateAvailability(nextScheduledUpdate)}`,
+      title: pendingUpdate
+        ? `New sources are queued for the next scheduled briefing. ${nextUpdateLabel}`
+        : nextUpdateLabel,
+    };
+  }, [articles.length, currentTimeMs, isFeedRefreshing, lastFeedDisplayAt, lastFeedUpdateRequestAt, pendingUpdate, preferredUpdateTime, sources.length]);
 
   const handleUpdateFeed = useCallback(async () => {
     setUpdating(true);
     try {
-      await fetch("/api/user/task", {
+      const response = await authenticatedFetch("/api/user/task", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: "rohil" }),
       });
-      localStorage.removeItem("pendingFeedUpdate");
+      if (!response.ok) {
+        throw new Error(`Feed update failed (${response.status})`);
+      }
+      const requestedAt = new Date();
+      localStorage.removeItem(pendingFeedUpdateStorageKey);
+      localStorage.setItem(lastFeedUpdateRequestStorageKey, requestedAt.toISOString());
       setPendingUpdate(false);
+      setLastFeedUpdateRequestAt(requestedAt);
+      setFeedPollState({
+        startedAtMs: requestedAt.getTime(),
+        baselineArticleCount: articles.length,
+        baselineLastProcessedAtMs: lastFeedUpdatedAt?.getTime() ?? null,
+      });
       showToast("Feed update started — new articles will appear shortly", "success");
     } catch {
       showToast("Failed to start feed update", "error");
     } finally {
       setUpdating(false);
     }
-  }, [showToast]);
+  }, [articles.length, authenticatedFetch, lastFeedUpdateRequestStorageKey, lastFeedUpdatedAt, pendingFeedUpdateStorageKey, showToast]);
+
+  useEffect(() => {
+    if (!feedPollState) {
+      return;
+    }
+
+    let cancelled = false;
+    let inFlight = false;
+
+    const pollForFeedChanges = async () => {
+      if (cancelled || inFlight) {
+        return;
+      }
+
+      inFlight = true;
+      try {
+        const snapshot = await fetchDashboardSnapshot();
+        if (cancelled) {
+          return;
+        }
+
+        const feedChanged =
+          snapshot.articleCount !== feedPollState.baselineArticleCount ||
+          (snapshot.lastProcessedAtMs !== null &&
+            (feedPollState.baselineLastProcessedAtMs === null ||
+              snapshot.lastProcessedAtMs > feedPollState.baselineLastProcessedAtMs));
+
+        if (feedChanged) {
+          applyDashboardSnapshot(snapshot);
+          setFeedPollState(null);
+          showToast("Feed updated", "success");
+          return;
+        }
+
+        if (Date.now() - feedPollState.startedAtMs >= 5 * 60 * 1000) {
+          setFeedPollState(null);
+          showToast("Feed update is taking longer than expected. Check back in a few minutes.", "info");
+        }
+      } catch (error) {
+        console.error("Failed to refresh dashboard feed:", error);
+      } finally {
+        inFlight = false;
+      }
+    };
+
+    const initialTimeoutId = window.setTimeout(() => {
+      void pollForFeedChanges();
+    }, 4000);
+
+    const intervalId = window.setInterval(() => {
+      void pollForFeedChanges();
+    }, 8000);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(initialTimeoutId);
+      window.clearInterval(intervalId);
+    };
+  }, [applyDashboardSnapshot, feedPollState, fetchDashboardSnapshot, showToast]);
 
   // ── Reader view ──
   if (viewMode === "reader") {
@@ -1848,63 +2165,6 @@ export function DashboardPage() {
           gap: isCompact ? 20 : 28,
         }}
       >
-        {pendingUpdate && (
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "space-between",
-              gap: 12,
-              padding: "10px 16px",
-              backgroundColor: "var(--sg-accent-subtle)",
-              border: "1px solid var(--sg-border)",
-              borderRadius: 8,
-              fontSize: 13,
-              color: "var(--sg-text)",
-            }}
-          >
-            <span>You have new sources — update your feed to start seeing articles from them.</span>
-            <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
-              <button
-                onClick={handleUpdateFeed}
-                disabled={updating}
-                style={{
-                  fontSize: 12.5,
-                  fontWeight: 600,
-                  color: "var(--sg-fab-color, #fff)",
-                  backgroundColor: "var(--sg-fab-bg, var(--sg-text))",
-                  border: "none",
-                  borderRadius: 6,
-                  padding: "5px 12px",
-                  cursor: updating ? "not-allowed" : "pointer",
-                  opacity: updating ? 0.6 : 1,
-                  whiteSpace: "nowrap",
-                }}
-              >
-                {updating ? "Updating…" : "Update Feed"}
-              </button>
-              <button
-                onClick={() => {
-                  localStorage.removeItem("pendingFeedUpdate");
-                  setPendingUpdate(false);
-                }}
-                style={{
-                  fontSize: 12.5,
-                  fontWeight: 500,
-                  color: "var(--sg-muted)",
-                  backgroundColor: "transparent",
-                  border: "1px solid var(--sg-border)",
-                  borderRadius: 6,
-                  padding: "5px 10px",
-                  cursor: "pointer",
-                }}
-              >
-                Dismiss
-              </button>
-            </div>
-          </div>
-        )}
-
         <div
           style={{
             display: "flex",
@@ -1926,13 +2186,12 @@ export function DashboardPage() {
                   justifyContent: "center",
                   padding: "6px 12px",
                   borderRadius: 999,
-                  border: isActive ? "1px solid var(--sg-text)" : "1px solid var(--sg-border)",
-                  backgroundColor: isActive ? "var(--sg-nav-active)" : "var(--sg-surface)",
+                  border: "1px solid var(--sg-border)",
+                  backgroundColor: "var(--sg-surface)",
                   color: "var(--sg-text)",
                   fontSize: 12.5,
                   fontWeight: isActive ? 700 : 500,
                   cursor: "pointer",
-                  boxShadow: isActive ? "0 2px 10px rgba(0,0,0,0.05)" : "none",
                   transition: "border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease",
                 }}
               >
@@ -1940,6 +2199,82 @@ export function DashboardPage() {
               </button>
             );
           })}
+
+          {feedUpdateStatus && (
+            <div
+              style={{
+                marginLeft: "auto",
+                display: "inline-flex",
+                alignItems: "center",
+              }}
+            >
+              {feedUpdateStatus.kind === "button" ? (
+                <button
+                  onClick={handleUpdateFeed}
+                  disabled={updating}
+                  title={feedUpdateStatus.title}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    padding: "6px 12px",
+                    borderRadius: 999,
+                    border: "1px solid var(--sg-border)",
+                    backgroundColor: "var(--sg-surface)",
+                    color: "var(--sg-text)",
+                    fontSize: 12.5,
+                    fontWeight: 500,
+                    cursor: updating ? "not-allowed" : "pointer",
+                    opacity: updating ? 0.7 : 1,
+                    transition: "border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {feedUpdateStatus.label}
+                </button>
+              ) : feedUpdateStatus.kind === "progress" ? (
+                <span
+                  title={feedUpdateStatus.title}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 7,
+                    padding: "6px 12px",
+                    borderRadius: 999,
+                    border: "1px solid var(--sg-border)",
+                    backgroundColor: "var(--sg-surface)",
+                    color: "var(--sg-text)",
+                    fontSize: 12.5,
+                    fontWeight: 500,
+                    whiteSpace: "nowrap",
+                    transition: "border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease",
+                  }}
+                >
+                  <Loader2 style={{ width: 12, height: 12, animation: "spin 1s linear infinite" }} />
+                  {feedUpdateStatus.label}
+                </span>
+              ) : (
+                <span
+                  title={feedUpdateStatus.title}
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    padding: "6px 12px",
+                    borderRadius: 999,
+                    border: "1px solid var(--sg-border)",
+                    backgroundColor: "var(--sg-surface)",
+                    color: "var(--sg-text)",
+                    fontSize: 12.5,
+                    fontWeight: 500,
+                    whiteSpace: "nowrap",
+                    transition: "border-color 0.15s ease, background-color 0.15s ease, box-shadow 0.15s ease",
+                  }}
+                >
+                  {feedUpdateStatus.label}
+                </span>
+              )}
+            </div>
+          )}
         </div>
 
         {dashboardMode === "keyword" && keywordCounts.length > 0 && (

@@ -1,6 +1,6 @@
 package com.rohil_verma.organization_api.Users;
 
-import java.time.LocalDateTime;
+import java.time.Instant;
 
 import jakarta.persistence.Entity;
 import jakarta.persistence.GeneratedValue;
@@ -22,17 +22,17 @@ public class SavedArticles {
 
     private String articleTitle;
 
-    private LocalDateTime timeStamp;
+    private Instant timeStamp;
 
     @ManyToOne
     @JoinColumn(name="user_id")
     private User user;
 
-    public LocalDateTime getTimeStamp() {
+    public Instant getTimeStamp() {
         return timeStamp;
     }
 
-    public void setTimeStamp(LocalDateTime timeStamp) {
+    public void setTimeStamp(Instant timeStamp) {
         this.timeStamp = timeStamp;
     }
 

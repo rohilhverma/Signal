@@ -502,7 +502,7 @@ async function javascriptBypasser(url){
     const browser = await chromium.launch({
         args: chromiumLambda.args,
         executablePath: await chromiumLambda.executablePath(),
-        headless: chromiumLambda.headless,
+        headless: true,
     })
     const page = await browser.newPage()
     try {
@@ -526,7 +526,7 @@ async function javascriptHTMLScraper(url){
     const browser = await chromium.launch({
         args: chromiumLambda.args,
         executablePath: await chromiumLambda.executablePath(),
-        headless: chromiumLambda.headless,
+        headless: true,
     })
     const page = await browser.newPage()
     try {

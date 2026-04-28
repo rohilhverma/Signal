@@ -8,7 +8,9 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 
+import org.hibernate.annotations.UuidGenerator;
 import org.springframework.security.core.GrantedAuthority;
 import org.springframework.security.core.userdetails.UserDetails;
 
@@ -41,7 +43,10 @@ public class User implements UserDetails {
     
     private String keywords = "";
 
-
+    @UuidGenerator
+    @Column(unique = true, updatable = false)
+    private UUID uniqueUUID;
+    
     @OneToMany(mappedBy = "user", cascade = CascadeType.ALL, orphanRemoval = true)
     @MapKey(name = "websiteURL")
     private Map<String, Subscription> subscriptions = new HashMap<>();
@@ -76,6 +81,10 @@ public class User implements UserDetails {
     public Integer getId() { return id; }
     public void setId(Integer id) { this.id = id; }
 
+    public UUID getUniqueUUID() {
+        return uniqueUUID;
+    }
+    
     @Override
     public String getUsername() { return username; }
     public void setUsername(String username) { this.username = username; }

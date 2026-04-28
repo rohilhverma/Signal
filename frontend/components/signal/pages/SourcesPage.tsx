@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import { Plus, Trash2, Globe, Newspaper, ChevronDown } from "lucide-react";
+import { useAuth } from "../context/AuthContext";
 import { useAppState, type ContentProfile } from "../context/AppStateContext";
 import { useToast } from "../context/ToastContext";
 import { usePreferences } from "../context/PreferencesContext";
@@ -226,6 +227,7 @@ function SourceRow({
   source: import("../context/AppStateContext").ManagedSource;
   isCompact: boolean;
 }) {
+  const { authenticatedFetch } = useAuth();
   const { setSourceProfile, removeSource } = useAppState();
   const { showToast } = useToast();
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -233,13 +235,22 @@ function SourceRow({
   const accent = source.accentColor ?? DEFAULT_ACCENT;
 
   const handleDelete = async () => {
-    await fetch("/api/user/url", {
-      method: "DELETE",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ username: "rohil", websiteURL: source.id }),
-    });
-    removeSource(source.id);
-    showToast(`Removed "${source.name}"`, "info");
+    try {
+      const response = await authenticatedFetch("/api/user/url", {
+        method: "DELETE",
+        body: JSON.stringify({ websiteURL: source.id }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Failed to remove source (${response.status})`);
+      }
+
+      removeSource(source.id);
+      showToast(`Removed "${source.name}"`, "info");
+    } catch (error) {
+      console.error("Failed to remove source:", error);
+      showToast("Could not remove source.", "error");
+    }
   };
 
   return (
@@ -371,6 +382,7 @@ function SourceRow({
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export function SourcesPage() {
+  const { authenticatedFetch, user } = useAuth();
   const { state, addSource } = useAppState();
   const { showToast } = useToast();
   const { density } = usePreferences();
@@ -391,11 +403,14 @@ export function SourcesPage() {
     setAdding(true);
 
     try {
-      await fetch("/api/user/website", {
+      const response = await authenticatedFetch("/api/user/website", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: "rohil", websiteURL: trimmed, websiteContentMode: newSourceProfile }),
+        body: JSON.stringify({ websiteURL: trimmed, websiteContentMode: newSourceProfile }),
       });
+
+      if (!response.ok) {
+        throw new Error(`Failed to add source (${response.status})`);
+      }
 
       const domain = domainFromUrl(trimmed);
       const name = nameFromDomain(domain);
@@ -415,10 +430,15 @@ export function SourcesPage() {
         contentProfile: newSourceProfile,
       };
       addSource(newSource);
-      localStorage.setItem("pendingFeedUpdate", "true");
+      if (user) {
+        localStorage.setItem(`signal.pendingFeedUpdate:${user.username}`, "true");
+      }
       setUrlInput("");
       setNewSourceProfile("standard");
       showToast(`Added "${name}"`, "success");
+    } catch (error) {
+      console.error("Failed to add source:", error);
+      showToast("Could not add source.", "error");
     } finally {
       setAdding(false);
     }

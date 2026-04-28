@@ -1,4 +1,4 @@
-package com.rohil_verma.organization_api.JWT;
+package com.rohil_verma.organization_api.Tokens;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
@@ -14,6 +14,7 @@ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+
 import com.rohil_verma.organization_api.Users.UserRepository;
 
 /* Helps get the various pieces in place to allow for login*/

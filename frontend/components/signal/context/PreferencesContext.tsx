@@ -1,11 +1,13 @@
 "use client";
 
-import { createContext, useContext, useReducer, ReactNode } from "react";
+import { createContext, useContext, useEffect, useReducer, ReactNode } from "react";
 
 export type Theme = "light" | "dark" | "sepia";
 export type FontFamily = "sans" | "serif" | "mono";
 export type Density = "comfortable" | "compact";
 export type ViewMode = "feed" | "reader";
+
+const PREFERENCES_STORAGE_KEY = "signal.preferences";
 
 /* A purely UI file
 References by Toolbar, AppLayout, SettingsPage,etc.
@@ -17,6 +19,7 @@ export interface Preferences {
   fontSize: number;
   density: Density;
   viewMode: ViewMode;
+  preferredUpdateTime: string;
 }
 
 type PreferencesAction =
@@ -25,7 +28,8 @@ type PreferencesAction =
   | { type: "SET_FONT_FAMILY"; payload: FontFamily }
   | { type: "SET_FONT_SIZE"; payload: number }
   | { type: "SET_DENSITY"; payload: Density }
-  | { type: "SET_VIEW_MODE"; payload: ViewMode };
+  | { type: "SET_VIEW_MODE"; payload: ViewMode }
+  | { type: "SET_PREFERRED_UPDATE_TIME"; payload: string };
 
 interface PreferencesContextValue extends Preferences {
   setTheme: (theme: Theme) => void;
@@ -34,6 +38,7 @@ interface PreferencesContextValue extends Preferences {
   setFontSize: (size: number) => void;
   setDensity: (density: Density) => void;
   setViewMode: (mode: ViewMode) => void;
+  setPreferredUpdateTime: (time: string) => void;
 }
 
 const defaultPreferences: Preferences = {
@@ -42,6 +47,7 @@ const defaultPreferences: Preferences = {
   fontSize: 16,
   density: "comfortable",
   viewMode: "feed",
+  preferredUpdateTime: "7:00 AM",
 };
 
 const THEME_ORDER: Theme[] = ["light", "dark", "sepia"];
@@ -62,6 +68,8 @@ function preferencesReducer(state: Preferences, action: PreferencesAction): Pref
       return { ...state, density: action.payload };
     case "SET_VIEW_MODE":
       return { ...state, viewMode: action.payload };
+    case "SET_PREFERRED_UPDATE_TIME":
+      return { ...state, preferredUpdateTime: action.payload };
     default:
       return state;
   }
@@ -70,7 +78,33 @@ function preferencesReducer(state: Preferences, action: PreferencesAction): Pref
 const PreferencesContext = createContext<PreferencesContextValue | null>(null);
 
 export function PreferencesProvider({ children }: { children: ReactNode }) {
-  const [state, dispatch] = useReducer(preferencesReducer, defaultPreferences);
+  const [state, dispatch] = useReducer(
+    preferencesReducer,
+    defaultPreferences,
+    (initialState) => {
+      if (typeof window === "undefined") {
+        return initialState;
+      }
+
+      try {
+        const stored = window.localStorage.getItem(PREFERENCES_STORAGE_KEY);
+        if (!stored) return initialState;
+
+        const parsed = JSON.parse(stored) as Partial<Preferences>;
+        return {
+          ...initialState,
+          ...parsed,
+        };
+      } catch {
+        return initialState;
+      }
+    }
+  );
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(PREFERENCES_STORAGE_KEY, JSON.stringify(state));
+  }, [state]);
 
   const value: PreferencesContextValue = {
     ...state,
@@ -80,6 +114,7 @@ export function PreferencesProvider({ children }: { children: ReactNode }) {
     setFontSize: (size) => dispatch({ type: "SET_FONT_SIZE", payload: size }),
     setDensity: (density) => dispatch({ type: "SET_DENSITY", payload: density }),
     setViewMode: (mode) => dispatch({ type: "SET_VIEW_MODE", payload: mode }),
+    setPreferredUpdateTime: (time) => dispatch({ type: "SET_PREFERRED_UPDATE_TIME", payload: time }),
   };
 
   return (

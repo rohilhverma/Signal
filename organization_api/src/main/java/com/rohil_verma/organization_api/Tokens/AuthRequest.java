@@ -1,9 +1,10 @@
-package com.rohil_verma.organization_api.JWT;
+package com.rohil_verma.organization_api.Tokens;
 
 public class AuthRequest {
     private String username;
     private String email;
     private String password;
+    private boolean rememberMe;
 
     public String getUsername() { return username; }
     public void setUsername(String username) { this.username = username; }
@@ -13,4 +14,7 @@ public class AuthRequest {
 
     public String getPassword() { return password; }
     public void setPassword(String password) { this.password = password; }
+
+    public boolean isRememberMe() { return rememberMe; }
+    public void setRememberMe(boolean rememberMe) { this.rememberMe = rememberMe; }
 }

@@ -15,6 +15,7 @@ import {
   type SummaryMode,
   DEFAULT_ACCENT,
 } from "../data/mockArticles";
+import { useAuth } from "./AuthContext";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -385,6 +386,7 @@ function createBookmark(article: Article, source: Source, summaryMode: SummaryMo
 }
 
 export function AppStateProvider({ children }: { children: ReactNode }) {
+  const { authenticatedFetch } = useAuth();
   const [state, dispatch] = useReducer(appReducer, initialState);
   const latestInteractionsRef = useRef(state.articleInteractions);
 
@@ -408,11 +410,9 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   const saveBookmark = useCallback(
     async (article: Article, source: Source, summaryMode: SummaryMode) => {
       try {
-        const res = await fetch("/api/user/saved/articles", {
+        const res = await authenticatedFetch("/api/user/saved/articles", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            username: "rohil",
             articleLink: article.url,
             articleTitle: article.title,
           }),
@@ -429,16 +429,14 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         return false;
       }
     },
-    []
+    [authenticatedFetch]
   );
   const removeBookmark = useCallback(
     async (articleLink: string) => {
       try {
-        const res = await fetch("/api/user/saved/articles", {
+        const res = await authenticatedFetch("/api/user/saved/articles", {
           method: "DELETE",
-          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            username: "rohil",
             articleLink,
           }),
         });
@@ -454,7 +452,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         return false;
       }
     },
-    []
+    [authenticatedFetch]
   );
   const isBookmarked = useCallback(
     (articleId: string) => state.bookmarks.some((b) => b.article.id === articleId),
@@ -503,7 +501,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
 
     async function loadSavedArticles() {
       try {
-        const res = await fetch("/api/user/saved/articles?username=rohil");
+        const res = await authenticatedFetch("/api/user/saved/articles");
         if (!res.ok) return;
 
         const savedArticles = await res.json() as Record<string, string>;
@@ -524,7 +522,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [authenticatedFetch]);
 
   useEffect(() => {
     function flushArticleInteractionScores() {
@@ -533,22 +531,21 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      const payload = {
-        username: "rohil",
-        activity,
-      };
+      const payload = { activity };
 
       console.log("[signal] article interaction beacon payload", payload);
 
-      if (!ARTICLE_INTERACTION_BEACON_ENDPOINT || typeof navigator === "undefined") {
+      if (!ARTICLE_INTERACTION_BEACON_ENDPOINT) {
         return;
       }
 
-      const body = JSON.stringify(payload);
-      navigator.sendBeacon(
-        ARTICLE_INTERACTION_BEACON_ENDPOINT,
-        new Blob([body], { type: "application/json" })
-      );
+      void authenticatedFetch(ARTICLE_INTERACTION_BEACON_ENDPOINT, {
+        method: "POST",
+        body: JSON.stringify(payload),
+        keepalive: true,
+      }).catch((error) => {
+        console.error("Failed to flush article activity:", error);
+      });
     }
 
     function handleVisibilityChange() {
@@ -564,7 +561,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       window.removeEventListener("pagehide", flushArticleInteractionScores);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, []);
+  }, [authenticatedFetch]);
 
   return (
     <AppStateContext.Provider

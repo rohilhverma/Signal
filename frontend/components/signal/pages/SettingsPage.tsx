@@ -2,6 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { Sun, Moon, Coffee, Type, AlignJustify, Clock, Tags, X } from "lucide-react";
+import { useAuth } from "../context/AuthContext";
+import { useAppState } from "../context/AppStateContext";
 import { usePreferences, type Theme, type FontFamily, type Density } from "../context/PreferencesContext";
 import { useToast } from "../context/ToastContext";
 
@@ -365,20 +367,20 @@ function mergeKeywords(values: string[]): string[] {
   return next;
 }
 
-const USERNAME = "rohil";
-
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export function SettingsPage() {
+  const { authenticatedFetch, signOut, user } = useAuth();
+  const { state } = useAppState();
   const {
     theme, setTheme,
     fontFamily, setFontFamily,
     fontSize, setFontSize,
     density, setDensity,
+    preferredUpdateTime, setPreferredUpdateTime,
   } = usePreferences();
   const { showToast } = useToast();
 
-  const [preferredTime, setPreferredTime] = useState("7:00 AM");
   const [keywordInput, setKeywordInput] = useState("");
   const [keywords, setKeywords] = useState<string[]>([]);
   const [keywordsLoading, setKeywordsLoading] = useState(true);
@@ -391,7 +393,7 @@ export function SettingsPage() {
     async function loadKeywords() {
       try {
         setKeywordsLoading(true);
-        const res = await fetch(`/api/user/keywords?username=${encodeURIComponent(USERNAME)}`);
+        const res = await authenticatedFetch("/api/user/keywords");
         if (!res.ok) {
           throw new Error(`Failed to load keywords (${res.status})`);
         }
@@ -417,7 +419,7 @@ export function SettingsPage() {
     return () => {
       cancelled = true;
     };
-  }, [showToast]);
+  }, [authenticatedFetch, showToast]);
 
   async function addKeywordsFromInput() {
     const incoming = keywordInput
@@ -439,11 +441,9 @@ export function SettingsPage() {
       setKeywordsSaving(true);
 
       for (const keyword of pending) {
-        const res = await fetch("/api/user/keywords", {
+        const res = await authenticatedFetch("/api/user/keywords", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            username: USERNAME,
             keyword,
           }),
         });
@@ -467,11 +467,9 @@ export function SettingsPage() {
     try {
       setKeywordBeingRemoved(keywordToRemove);
 
-      const res = await fetch("/api/user/keywords", {
+      const res = await authenticatedFetch("/api/user/keywords", {
         method: "DELETE",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          username: USERNAME,
           keyword: keywordToRemove,
         }),
       });
@@ -534,13 +532,32 @@ export function SettingsPage() {
               <span
                 style={{ fontSize: 16, fontWeight: 700, color: "var(--sg-logo-color, #fff)" }}
               >
-                A
+                {(user?.username?.slice(0, 1) ?? "S").toUpperCase()}
               </span>
             </div>
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 14, fontWeight: 600, color: "var(--sg-text)" }}>Alex Reader</div>
-              <div style={{ fontSize: 12, color: "var(--sg-muted)", marginTop: 1 }}>alex@signal.app</div>
+              <div style={{ fontSize: 14, fontWeight: 600, color: "var(--sg-text)" }}>
+                {user?.username ?? "Signal User"}
+              </div>
+              <div style={{ fontSize: 12, color: "var(--sg-muted)", marginTop: 1 }}>
+                {user?.email ?? "No email available"}
+              </div>
             </div>
+            <button
+              onClick={signOut}
+              style={{
+                fontSize: 12,
+                fontWeight: 600,
+                color: "var(--sg-muted)",
+                backgroundColor: "transparent",
+                border: "1px solid var(--sg-border)",
+                borderRadius: 8,
+                padding: "8px 12px",
+                cursor: "pointer",
+              }}
+            >
+              Sign Out
+            </button>
           </div>
 
           {/* Read-only fields */}
@@ -555,40 +572,24 @@ export function SettingsPage() {
               <div style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--sg-muted)", marginBottom: 4 }}>
                 Username
               </div>
-              <div style={{ fontSize: 13.5, color: "var(--sg-text)", fontWeight: 500 }}>alex_reader</div>
+              <div style={{ fontSize: 13.5, color: "var(--sg-text)", fontWeight: 500 }}>
+                {user?.username ?? "Unavailable"}
+              </div>
             </div>
             <div style={{ padding: "13px 18px", borderBottom: "1px solid var(--sg-border)" }}>
               <div style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--sg-muted)", marginBottom: 4 }}>
                 Email
               </div>
-              <div style={{ fontSize: 13.5, color: "var(--sg-text)", fontWeight: 500 }}>alex@signal.app</div>
-            </div>
-            <div style={{ padding: "13px 18px", borderRight: "1px solid var(--sg-border)" }}>
-              <div style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--sg-muted)", marginBottom: 4 }}>
-                Member since
+              <div style={{ fontSize: 13.5, color: "var(--sg-text)", fontWeight: 500 }}>
+                {user?.email ?? "Unavailable"}
               </div>
-              <div style={{ fontSize: 13.5, color: "var(--sg-text)", fontWeight: 500 }}>January 2026</div>
             </div>
-            <div style={{ padding: "13px 18px" }}>
+            <div style={{ padding: "13px 18px", gridColumn: "1 / -1" }}>
               <div style={{ fontSize: 11, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--sg-muted)", marginBottom: 4 }}>
-                Plan
+                Sources
               </div>
-              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <div style={{ fontSize: 13.5, color: "var(--sg-text)", fontWeight: 500 }}>Free</div>
-                <span
-                  style={{
-                    fontSize: 10,
-                    fontWeight: 700,
-                    textTransform: "uppercase",
-                    letterSpacing: "0.06em",
-                    color: "#f59e0b",
-                    backgroundColor: "rgba(245,158,11,0.1)",
-                    padding: "1px 6px",
-                    borderRadius: 4,
-                  }}
-                >
-                  Beta
-                </span>
+              <div style={{ fontSize: 13.5, color: "var(--sg-text)", fontWeight: 500 }}>
+                {Math.max(state.sources.length, user?.websites.length ?? 0)}
               </div>
             </div>
           </div>
@@ -835,8 +836,8 @@ export function SettingsPage() {
             <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <Clock style={{ width: 13, height: 13, color: "var(--sg-muted)", flexShrink: 0 }} />
               <select
-                value={preferredTime}
-                onChange={(e) => setPreferredTime(e.target.value)}
+                value={preferredUpdateTime}
+                onChange={(e) => setPreferredUpdateTime(e.target.value)}
                 aria-label="Preferred update time"
                 style={{
                   fontSize: 13,

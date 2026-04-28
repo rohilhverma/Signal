@@ -1,6 +1,7 @@
-package com.rohil_verma.organization_api.JWT;
+package com.rohil_verma.organization_api.Tokens;
 
 import java.io.IOException;
+import java.util.Arrays;
 
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -17,6 +18,7 @@ import io.jsonwebtoken.Jws;
 import io.jsonwebtoken.JwtException;
 import jakarta.servlet.FilterChain;
 import jakarta.servlet.ServletException;
+import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
@@ -37,15 +39,24 @@ public class FilterJWT extends OncePerRequestFilter {
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
 
-        String header = request.getHeader("Authorization");
-        if (header == null || !header.startsWith("Bearer ")) {
+        Cookie[] cookies = request.getCookies();
+        if (cookies == null) {
             chain.doFilter(request, response);
             return;
         }
 
-        String token = header.substring(7);
+        String token = Arrays.stream(cookies)
+                .filter(c -> "accessToken".equals(c.getName()))
+                .map(Cookie::getValue)
+                .findFirst()
+                .orElse(null);
+
+        if (token == null) {
+            chain.doFilter(request, response);
+            return;
+        }
         try {
-            Jws<Claims> userInfo = jwtService.jwtsParser(token);
+            Jws<Claims> userInfo = jwtService.jwtsParser(token,"jwt");
             if (userInfo == null) {
                 throw new JwtException("Invalid or expired token");
             }

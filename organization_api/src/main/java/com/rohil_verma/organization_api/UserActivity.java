@@ -1,6 +1,6 @@
 package com.rohil_verma.organization_api;
 
-import java.time.LocalDateTime;
+import java.time.Instant;
 
 import org.hibernate.annotations.CreationTimestamp;
 
@@ -31,7 +31,7 @@ public class UserActivity {
     private Integer score;
 
     @CreationTimestamp()
-    private LocalDateTime createdAt;
+    private Instant createdAt;
 
     public UserActivity(){}
 
@@ -67,11 +67,11 @@ public class UserActivity {
         this.score = score;
     }
 
-    public LocalDateTime getCreatedAt() {
+    public Instant getCreatedAt() {
         return createdAt;
     }
 
-    public void setCreatedAt(LocalDateTime createdAt) {
+    public void setCreatedAt(Instant createdAt) {
         this.createdAt = createdAt;
     }
 

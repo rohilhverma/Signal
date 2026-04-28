@@ -21,24 +21,24 @@ public class OrganizationApiApplication {
 	@Bean
 	CommandLineRunner commandLineRunner(UserRepository userRepository, UserService userService) {
 		return args -> {
-			if(userRepository.count() == 0){
-				User rohil = new User("rohil", "rohil@gmail.com");
-				rohil.addSubscription("https://theverge.com", null);
-				rohil.addSubscription("https://arstechnica.com", null);
-				rohil.addSubscription("https://techcrunch.com", null);
-				rohil.addSubscription("https://www.wired.com", null);
-				rohil.addSubscription("https://www.engadget.com", null);
-				rohil.addSubscription("https://www.zdnet.com", null);
-				rohil.addSubscription("https://www.tomshardware.com", null);
-				rohil.addSubscription("https://www.bleepingcomputer.com", null);
-				rohil.addSubscription("https://9to5mac.com", null);
-				rohil.addSubscription("https://www.androidauthority.com", null);
-				userRepository.save(rohil);
-				ResponseEntity<String> x = userService.sendScrapingTask("rohil");
-				System.out.println(x.getStatusCode());
-			} else {
-				// ResponseEntity<String> x = userService.sendScrapingTask("rohil");
-			}
+			// if(userRepository.count() == 0){
+			// 	User rohil = new User("rohil", "rohil@gmail.com");
+			// 	rohil.addSubscription("https://theverge.com", null);
+			// 	rohil.addSubscription("https://arstechnica.com", null);
+			// 	rohil.addSubscription("https://techcrunch.com", null);
+			// 	rohil.addSubscription("https://www.wired.com", null);
+			// 	rohil.addSubscription("https://www.engadget.com", null);
+			// 	rohil.addSubscription("https://www.zdnet.com", null);
+			// 	rohil.addSubscription("https://www.tomshardware.com", null);
+			// 	rohil.addSubscription("https://www.bleepingcomputer.com", null);
+			// 	rohil.addSubscription("https://9to5mac.com", null);
+			// 	rohil.addSubscription("https://www.androidauthority.com", null);
+			// 	userRepository.save(rohil);
+			// 	ResponseEntity<String> x = userService.sendScrapingTask("rohil");
+			// 	System.out.println(x.getStatusCode());
+			// } else {
+			// 	// ResponseEntity<String> x = userService.sendScrapingTask("rohil");
+			// }
 		};
 	
 	}
