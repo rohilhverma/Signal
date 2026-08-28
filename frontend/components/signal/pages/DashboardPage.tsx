@@ -166,6 +166,32 @@ function getKeywordVariants(keyword: string): string[] {
   );
 }
 
+function createFallbackManagedSource(sourceId: string): ManagedSource {
+  try {
+    const url = new URL(sourceId);
+    const hostname = url.hostname.replace(/^www\./, "");
+    return {
+      id: sourceId,
+      name: hostname.split(".")[0].replace(/^\w/, (char) => char.toUpperCase()),
+      domain: hostname,
+      faviconUrl: `https://www.google.com/s2/favicons?sz=64&domain=${hostname}`,
+      accentColor: DEFAULT_ACCENT,
+      contentProfile: "standard",
+      articleCount: 0,
+    };
+  } catch {
+    return {
+      id: sourceId,
+      name: sourceId,
+      domain: sourceId,
+      faviconUrl: "",
+      accentColor: DEFAULT_ACCENT,
+      contentProfile: "standard",
+      articleCount: 0,
+    };
+  }
+}
+
 function scoreArticleForKeyword(article: Article, keyword: string): KeywordArticleMatch | null {
   const variants = getKeywordVariants(keyword);
   let score = 0;
@@ -420,6 +446,58 @@ function EmptyState({ onAddSource }: { onAddSource: () => void }) {
       >
         Add a Source
       </button>
+    </div>
+  );
+}
+
+function FirstBriefingLoader({ padding }: { padding?: string } = {}) {
+  return (
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "center",
+        justifyContent: "center",
+        gap: 14,
+        padding: padding ?? "64px 32px",
+        textAlign: "center",
+      }}
+    >
+      <Loader2
+        style={{
+          width: 28,
+          height: 28,
+          color: "var(--sg-text)",
+          opacity: 0.7,
+          animation: "spin 1s linear infinite",
+        }}
+      />
+      <div style={{ fontSize: 14, fontWeight: 600, color: "var(--sg-text)" }}>
+        Building your first briefing…
+      </div>
+      <div style={{ fontSize: 12.5, color: "var(--sg-muted)", lineHeight: 1.6, maxWidth: 320 }}>
+        We&apos;re scraping and summarizing your sources. This can take a couple of minutes.
+      </div>
+    </div>
+  );
+}
+
+function FirstBriefingPrompt({ padding }: { padding?: string } = {}) {
+  return (
+    <div
+      style={{
+        padding: padding ?? "22px 20px",
+        borderRadius: 10,
+        border: "1px solid var(--sg-border)",
+        backgroundColor: "var(--sg-surface)",
+      }}
+    >
+      <div style={{ fontSize: 14, fontWeight: 600, color: "var(--sg-text)" }}>
+        Your feed hasn&apos;t been built yet.
+      </div>
+      <div style={{ fontSize: 12.5, color: "var(--sg-muted)", marginTop: 4, lineHeight: 1.6 }}>
+        Click <strong>Update Feed</strong> at the top to fetch your first briefing.
+      </div>
     </div>
   );
 }
@@ -965,7 +1043,7 @@ function SourceGroup({
   onTrackLinkClick,
 }: SourceGroupProps) {
   const accent = source.accentColor ?? DEFAULT_ACCENT;
-  const visibleArticles = articles.filter((a) => getAgeState(a, seenIds) !== "expired");
+  const visibleArticles = articles;
   if (visibleArticles.length === 0) return null;
 
   const COLLAPSED_LIMIT = 4;
@@ -1409,12 +1487,290 @@ function ReaderView({
   );
 }
 
+// ─── Hot Topics ──────────────────────────────────────────────────────────────
+
+const HOT_TOPICS_STOPWORDS = new Set([
+  "the","a","an","and","or","but","in","on","at","to","for","of","with","by",
+  "from","is","are","was","were","be","been","being","have","has","had","do",
+  "does","did","will","would","could","should","may","might","can","its","it",
+  "this","that","these","those","as","up","out","so","if","not","no","nor",
+  "yet","both","either","neither","each","few","more","most","other","some",
+  "such","than","too","very","just","how","when","where","who","which","what",
+  "why","all","any","after","about","into","through","during","before","while",
+  "their","there","they","them","then","say","says","said","also","now","over",
+  "under","between","our","we","us","he","she","his","her","him","my","your",
+  "one","two","first","last","next","like","get","make","take","use","see",
+  "know","come","go","want","look","think","give","back","still","well","way",
+  "even","much","need","set","put","end","week","year","day","time","per","via",
+  "company","companies","technology","tech","system","systems","product","products",
+  "service","services","business","businesses","market","markets","user","users",
+  "app","apps","platform","platforms","team","teams","work","using","based","made",
+  "called","including","percent","million","billion","people","thing","things",
+  "part","long","high","low","large","small","big","old","report","reports",
+  "according","following","despite","amid","since","though","although","however",
+  "because","within","without","around","among","against","data","number","numbers",
+]);
+
+type HotTopic = {
+  term: string;
+  sourceIds: string[];
+  totalMentions: number;
+  articlesBySource: Map<string, Article[]>;
+};
+
+function computeHotTopics(articles: Article[], sources: Source[]): HotTopic[] {
+  const sourceOrder = new Map(sources.map((s, i) => [s.id, i]));
+
+  const index = new Map<string, {
+    forms: Map<string, number>;
+    sourceArticles: Map<string, Set<string>>;
+    articleIndex: Map<string, Article>;
+    totalMentions: number;
+  }>();
+
+  for (const article of articles) {
+    const text = `${article.title} ${article.summaryDefault}`;
+    const tokens = (text.match(/\b[A-Za-z][A-Za-z]{2,}\b/g) ?? [])
+      .filter(t => !HOT_TOPICS_STOPWORDS.has(t.toLowerCase()));
+
+    for (const token of tokens) {
+      const key = token.toLowerCase();
+      const entry = index.get(key);
+      if (!entry) {
+        index.set(key, {
+          forms: new Map([[token, 1]]),
+          sourceArticles: new Map([[article.sourceId, new Set([article.id])]]),
+          articleIndex: new Map([[article.id, article]]),
+          totalMentions: 1,
+        });
+      } else {
+        entry.forms.set(token, (entry.forms.get(token) ?? 0) + 1);
+        entry.totalMentions += 1;
+        entry.articleIndex.set(article.id, article);
+        if (!entry.sourceArticles.has(article.sourceId)) {
+          entry.sourceArticles.set(article.sourceId, new Set([article.id]));
+        } else {
+          entry.sourceArticles.get(article.sourceId)!.add(article.id);
+        }
+      }
+    }
+  }
+
+  return Array.from(index.values())
+    .filter(e => e.sourceArticles.size >= 2)
+    .map(entry => {
+      let bestForm = "";
+      let bestScore = -1;
+      for (const [form, count] of entry.forms) {
+        const score = count * (form !== form.toLowerCase() ? 1.5 : 1);
+        if (score > bestScore) { bestScore = score; bestForm = form; }
+      }
+      const sourceIds = Array.from(entry.sourceArticles.keys())
+        .sort((a, b) => (sourceOrder.get(a) ?? 999) - (sourceOrder.get(b) ?? 999));
+      const articlesBySource = new Map<string, Article[]>();
+      for (const [srcId, ids] of entry.sourceArticles) {
+        articlesBySource.set(
+          srcId,
+          Array.from(ids).map(id => entry.articleIndex.get(id)!).filter(Boolean),
+        );
+      }
+      return { term: bestForm, sourceIds, totalMentions: entry.totalMentions, articlesBySource };
+    })
+    .sort((a, b) =>
+      b.sourceIds.length !== a.sourceIds.length
+        ? b.sourceIds.length - a.sourceIds.length
+        : b.totalMentions - a.totalMentions
+    )
+    .slice(0, 15);
+}
+
+function HotTopicsView({
+  topics,
+  sources,
+  expandedIds,
+  onToggleExpand,
+  bookmarkedIds,
+  onToggleBookmark,
+  seenIds,
+  newSinceLastVisit,
+  summaryModes,
+  onSummaryModeChange,
+  loadingModesByArticle,
+  onTrackLinkClick,
+  stats,
+}: {
+  topics: HotTopic[];
+  sources: Source[];
+  expandedIds: Set<string>;
+  onToggleExpand: (id: string) => void;
+  bookmarkedIds: Set<string>;
+  onToggleBookmark: (id: string) => void;
+  seenIds: Set<string>;
+  newSinceLastVisit: Set<string>;
+  summaryModes: Map<string, SummaryMode>;
+  onSummaryModeChange: (articleId: string, mode: SummaryMode) => void;
+  loadingModesByArticle: Map<string, Set<SummaryMode>>;
+  onTrackLinkClick: (articleId: string) => void;
+  stats: { articleCount: number; sourceCount: number };
+}) {
+  const [expandedTopics, setExpandedTopics] = useState<Set<string>>(new Set());
+  const sourceMap = useMemo(() => new Map(sources.map(s => [s.id, s])), [sources]);
+
+  function toggleTopic(term: string) {
+    setExpandedTopics(prev => {
+      const next = new Set(prev);
+      next.has(term) ? next.delete(term) : next.add(term);
+      return next;
+    });
+  }
+
+  if (topics.length === 0) {
+    return (
+      <div style={{ padding: "48px 0", textAlign: "center", color: "var(--sg-muted)", fontSize: 13.5, lineHeight: 1.6 }}>
+        Not enough cross-source coverage yet. Add more sources or check back after a feed update.
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column" }}>
+      <div style={{
+        fontSize: 10,
+        fontWeight: 700,
+        letterSpacing: "0.11em",
+        textTransform: "uppercase" as const,
+        color: "var(--sg-muted)",
+        marginBottom: 20,
+        opacity: 0.7,
+      }}>
+        Topics trending across multiple sources right now
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column" }}>
+        {topics.map((topic, rank) => {
+          const t = topics.length <= 1 ? 0 : rank / (topics.length - 1);
+          const fontSize = Math.round(28 - t * 14);
+          const fontWeight = Math.max(400, Math.round((700 - t * 300) / 100) * 100);
+          const isOpen = expandedTopics.has(topic.term);
+
+          const expandedArticles: Article[] = [];
+          const seen = new Set<string>();
+          for (const srcId of topic.sourceIds) {
+            for (const a of topic.articlesBySource.get(srcId) ?? []) {
+              if (!seen.has(a.id)) { seen.add(a.id); expandedArticles.push(a); }
+            }
+          }
+
+          return (
+            <div key={topic.term}>
+              <div
+                role="button"
+                tabIndex={0}
+                onClick={() => toggleTopic(topic.term)}
+                onKeyDown={e => (e.key === "Enter" || e.key === " ") && toggleTopic(topic.term)}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 12,
+                  padding: "11px 10px",
+                  borderRadius: 7,
+                  cursor: "pointer",
+                  backgroundColor: "transparent",
+                  transition: "background-color 0.15s ease",
+                  userSelect: "none" as const,
+                  outline: "none",
+                }}
+                onMouseEnter={e => (e.currentTarget.style.backgroundColor = "var(--sg-surface-hover)")}
+                onMouseLeave={e => (e.currentTarget.style.backgroundColor = "transparent")}
+              >
+                <span style={{
+                  fontSize,
+                  fontWeight,
+                  color: "var(--sg-text)",
+                  lineHeight: 1.2,
+                  letterSpacing: fontSize > 20 ? "-0.4px" : "-0.1px",
+                  flex: 1,
+                }}>
+                  {topic.term}
+                </span>
+
+                <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+                  <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                    {topic.sourceIds.map(srcId => (
+                      <div
+                        key={srcId}
+                        title={sourceMap.get(srcId)?.name ?? srcId}
+                        style={{
+                          width: 9,
+                          height: 9,
+                          borderRadius: "50%",
+                          backgroundColor: sourceMap.get(srcId)?.accentColor ?? DEFAULT_ACCENT,
+                          flexShrink: 0,
+                        }}
+                      />
+                    ))}
+                  </div>
+                  <span style={{ fontSize: 11.5, color: "var(--sg-muted)", whiteSpace: "nowrap" as const }}>
+                    across {topic.sourceIds.length} sources
+                  </span>
+                  <ChevronRight
+                    style={{
+                      width: 13,
+                      height: 13,
+                      color: "var(--sg-muted)",
+                      transform: isOpen ? "rotate(90deg)" : "rotate(0deg)",
+                      transition: "transform 0.2s ease",
+                      flexShrink: 0,
+                    }}
+                  />
+                </div>
+              </div>
+
+              {isOpen && (
+                <div style={{ padding: "4px 0 16px 10px", display: "flex", flexDirection: "column", gap: 8 }}>
+                  {expandedArticles.map(article => {
+                    const source = sourceMap.get(article.sourceId);
+                    if (!source) return null;
+                    return (
+                      <ArticleCard
+                        key={article.id}
+                        article={article}
+                        source={source}
+                        ageState={getAgeState(article, seenIds)}
+                        expanded={expandedIds.has(article.id)}
+                        onToggleExpand={() => onToggleExpand(article.id)}
+                        bookmarked={bookmarkedIds.has(article.id)}
+                        onToggleBookmark={() => onToggleBookmark(article.id)}
+                        isNew={newSinceLastVisit.has(article.id)}
+                        summaryMode={summaryModes.get(article.id) ?? "default"}
+                        onSummaryModeChange={mode => onSummaryModeChange(article.id, mode)}
+                        loadingModes={loadingModesByArticle.get(article.id) ?? new Set()}
+                        sourceCollapsed={false}
+                        matchLabel={topic.term}
+                        onTrackLinkClick={() => onTrackLinkClick(article.id)}
+                      />
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ marginTop: 32, fontSize: 12, color: "var(--sg-muted)", opacity: 0.8 }}>
+        {stats.sourceCount} sources · {stats.articleCount} articles
+      </div>
+    </div>
+  );
+}
+
 // ─── Dashboard Page ───────────────────────────────────────────────────────────
 
 // Per-article summary content (mutable in state)
 type ArticleSummaryCache = Map<string, Partial<Record<SummaryMode, string>>>;
 
-type DashboardMode = "default" | "keyword";
+type DashboardMode = "default" | "keyword" | "hotTopics";
 
 type DashboardArticleFields = {
   date: string;
@@ -1447,10 +1803,18 @@ type FeedPollState = {
   baselineLastProcessedAtMs: number | null;
 };
 
+type FeedUpdateStatus =
+  | { kind: "button"; label: string; title: string }
+  | { kind: "progress"; label: string; title: string }
+  | { kind: "status"; label: string; title: string };
+
 const DASHBOARD_MODES: { key: DashboardMode; label: string }[] = [
   { key: "default", label: "Default" },
   { key: "keyword", label: "Keyword" },
+  { key: "hotTopics", label: "Hot Topics" },
 ];
+
+const FEED_UPDATE_TIMEOUT_MS = 5 * 60 * 1000;
 
 export function DashboardPage() {
   const navigate = useNavigate();
@@ -1463,7 +1827,11 @@ export function DashboardPage() {
   const sources = appState.sources;
   const articles = appState.articles;
 
+  const hasLoadedDashboardSnapshotRef = useRef(false);
+  const sourcesRef = useRef(sources);
+  useEffect(() => { sourcesRef.current = sources; }, [sources]);
   const lastVisitRef = useRef<Date>(new Date(Date.now() - 24 * 60 * 60 * 1000));
+  const preUpdateArticleIdsRef = useRef<Set<string> | null>(null);
   const [newSinceLastVisit, setNewSinceLastVisit] = useState<Set<string>>(new Set());
   const [seenIds, setSeenIds] = useState<Set<string>>(new Set());
 
@@ -1524,8 +1892,8 @@ export function DashboardPage() {
     });
   }, [dashboardMode, keywords]);
 
-  const fetchDashboardSnapshot = useCallback(async (): Promise<DashboardFeedSnapshot> => {
-    const res = await authenticatedFetch("/api/user/website");
+  const fetchDashboardSnapshot = useCallback(async (signal?: AbortSignal): Promise<DashboardFeedSnapshot> => {
+    const res = await authenticatedFetch("/api/user/website", signal ? { signal } : undefined);
     if (!res.ok) {
       const text = await res.text();
       throw new Error(`Backend error ${res.status}: ${text}`);
@@ -1535,8 +1903,9 @@ export function DashboardPage() {
 
     const derivedSources: Source[] = await Promise.all(
       Object.keys(response).map(async (sourceUrl) => {
-        const hostname = new URL(sourceUrl).hostname.replace(/^www\./, "");
-        const existingSource = sources.find((source) => source.id === sourceUrl);
+        const fallbackSource = createFallbackManagedSource(sourceUrl);
+        const hostname = fallbackSource.domain;
+        const existingSource = sourcesRef.current.find((source) => source.id === sourceUrl);
 
         let faviconUrl = existingSource?.faviconUrl ?? `https://www.google.com/s2/favicons?sz=64&domain=${hostname}`;
         let accentColor = existingSource?.accentColor ?? DEFAULT_ACCENT;
@@ -1551,7 +1920,7 @@ export function DashboardPage() {
 
         return {
           id: sourceUrl,
-          name: response[sourceUrl].siteName ?? hostname.split(".")[0].replace(/^\w/, (c) => c.toUpperCase()),
+          name: response[sourceUrl].siteName ?? fallbackSource.name,
           domain: hostname,
           faviconUrl,
           accentColor,
@@ -1562,7 +1931,7 @@ export function DashboardPage() {
 
     const derivedArticles: Article[] = Object.entries(response).flatMap(
       ([sourceUrl, { articles: articleList }]) =>
-        articleList.flatMap((articleEntry) =>
+        (Array.isArray(articleList) ? articleList : []).flatMap((articleEntry) =>
           Object.entries(articleEntry).map(([title, fields]) => ({
             id: fields.link,
             sourceId: sourceUrl,
@@ -1596,18 +1965,23 @@ export function DashboardPage() {
       articleCount: derivedArticles.length,
       lastProcessedAtMs,
     };
-  }, [authenticatedFetch, sources]);
+  }, [authenticatedFetch]);
 
-  const applyDashboardSnapshot = useCallback((snapshot: DashboardFeedSnapshot) => {
+  const applyDashboardSnapshot = useCallback((snapshot: DashboardFeedSnapshot, preUpdateIds?: Set<string>) => {
     snapshot.sources.forEach((source) => addSource(source));
     setArticles(snapshot.articles);
 
-    const lastVisit = lastVisitRef.current;
-    const nextNewIds = new Set(
-      snapshot.articles
-        .filter((article) => getArticleFreshnessDate(article) > lastVisit)
-        .map((article) => article.id)
-    );
+    const nextNewIds = preUpdateIds
+      ? new Set(
+          snapshot.articles
+            .filter((article) => !preUpdateIds.has(article.id))
+            .map((article) => article.id)
+        )
+      : new Set(
+          snapshot.articles
+            .filter((article) => getArticleFreshnessDate(article) > lastVisitRef.current)
+            .map((article) => article.id)
+        );
     setNewSinceLastVisit(nextNewIds);
 
     const visibleIds = new Set(
@@ -1629,16 +2003,19 @@ export function DashboardPage() {
       return nextCache;
     });
 
-    lastVisitRef.current = new Date();
+    if (!preUpdateIds) {
+      lastVisitRef.current = new Date();
+    }
   }, [addSource, setArticles]);
 
   // Fetch / load data
   useEffect(() => {
-    if (sources.length > 0) return;
+    if (hasLoadedDashboardSnapshotRef.current) return;
+
     let cancelled = false;
 
     async function load() {
-      setLoading(true);
+      if (sources.length === 0) setLoading(true);
       try {
         const snapshot = await fetchDashboardSnapshot();
         if (cancelled) return;
@@ -1647,6 +2024,7 @@ export function DashboardPage() {
         console.error("Failed to load articles:", err);
       } finally {
         if (!cancelled) {
+          hasLoadedDashboardSnapshotRef.current = true;
           setLoading(false);
         }
       }
@@ -1656,7 +2034,7 @@ export function DashboardPage() {
     return () => {
       cancelled = true;
     };
-  }, [applyDashboardSnapshot, fetchDashboardSnapshot, sources.length]);
+  }, [applyDashboardSnapshot, fetchDashboardSnapshot]);
 
   // Handle summary mode change — fetch if not already cached
   const handleSummaryModeChange = useCallback(
@@ -1754,8 +2132,7 @@ export function DashboardPage() {
   }, [articles, dashboardMode, selectedKeyword]);
 
   const filteredArticles = useMemo(() => {
-    const nonExpired = articles.filter((a) => (Date.now() - getArticleFreshnessDate(a).getTime()) / (1000 * 60 * 60) < 24);
-    if (dashboardMode !== "keyword") return nonExpired;
+    if (dashboardMode !== "keyword") return articles;
     return keywordRankedArticles.map((entry) => entry.article);
   }, [articles, dashboardMode, keywordRankedArticles]);
 
@@ -1770,23 +2147,12 @@ export function DashboardPage() {
   }, [dashboardMode, keywordRankedArticles]);
 
   const visibleSources = useMemo<ManagedSource[]>(() => {
-    if (dashboardMode !== "keyword") {
-      const sourceIds = new Set(filteredArticles.map((article) => article.sourceId));
-      return sources.filter((source) => sourceIds.has(source.id));
-    }
-
     const orderedSourceIds = Array.from(new Set(filteredArticles.map((article) => article.sourceId)));
-    const orderedSources: ManagedSource[] = [];
-
-    for (const sourceId of orderedSourceIds) {
+    return orderedSourceIds.map((sourceId) => {
       const source = sources.find((candidate) => candidate.id === sourceId);
-      if (source) {
-        orderedSources.push(source);
-      }
-    }
-
-    return orderedSources;
-  }, [dashboardMode, filteredArticles, sources]);
+      return source ?? createFallbackManagedSource(sourceId);
+    });
+  }, [filteredArticles, sources]);
 
   const stats = useMemo(() => {
     const nonExpired = filteredArticles;
@@ -1794,17 +2160,22 @@ export function DashboardPage() {
     return { articleCount: nonExpired.length, sourceCount: sourcesWithContent };
   }, [filteredArticles]);
 
+  const hotTopics = useMemo(
+    () => computeHotTopics(articles, sources),
+    [articles, sources]
+  );
+
   // Flattened article list for Reader view (grouped by source, newest first within each group)
   const flatArticles = useMemo(() => {
     const result: Article[] = [];
     for (const src of visibleSources) {
       const srcArticles = filteredArticles
-        .filter((a) => a.sourceId === src.id && getAgeState(a, seenIds) !== "expired")
+        .filter((a) => a.sourceId === src.id)
         .sort((a, b) => b.publishedAt.getTime() - a.publishedAt.getTime());
       result.push(...srcArticles);
     }
     return result;
-  }, [filteredArticles, visibleSources, seenIds]);
+  }, [filteredArticles, visibleSources]);
 
   const articlesBySource = useMemo(() => {
     const map = new Map<string, Article[]>();
@@ -1947,19 +2318,48 @@ export function DashboardPage() {
     [lastFeedUpdateRequestAt, lastFeedUpdatedAt]
   );
   const isFeedRefreshing = updating || feedPollState !== null;
+  const isFirstTimeUpdating = feedPollState !== null && articles.length === 0;
+  const isFirstTimeBeforeUpdate =
+    sources.length > 0 &&
+    articles.length === 0 &&
+    lastFeedUpdateRequestAt === null &&
+    !isFirstTimeUpdating;
 
-  const feedUpdateStatus = useMemo(() => {
+  const feedUpdateStatus = useMemo<FeedUpdateStatus | null>(() => {
     if (sources.length === 0) {
       return null;
     }
 
+    const canBootstrapFeed = articles.length === 0 && lastFeedUpdateRequestAt === null;
+
+    if (isFeedRefreshing) {
+      return {
+        kind: "progress" as const,
+        label: "Updating feed…",
+        title: "Fetching the latest briefing. New articles will appear automatically when the update finishes.",
+      };
+    }
+
+    return {
+      kind: "button" as const,
+      label: "Update Feed",
+      title: canBootstrapFeed
+        ? pendingUpdate
+          ? "You added sources. Generate the first daily briefing when you're ready."
+          : "Generate your first daily briefing to start populating the feed."
+        : pendingUpdate
+          ? "You added sources. Update the feed to roll them into today's briefing."
+          : "Update the feed when you're ready for the latest recap.",
+    };
+
+    /*
+    // Temporarily disabled: daily refresh cooldown.
     const now = new Date(currentTimeMs);
     const todayPreferredTime = setTimeOnDate(now, preferredUpdateTime);
     const nextScheduledUpdate = now < todayPreferredTime
       ? todayPreferredTime
       : setTimeOnDate(new Date(now.getTime() + 24 * 60 * 60 * 1000), preferredUpdateTime);
 
-    const canBootstrapFeed = articles.length === 0 && lastFeedUpdateRequestAt === null;
     const nextUpdateLabel = `Next update available ${formatNextUpdateAvailability(nextScheduledUpdate)}.`;
 
     if (isFeedRefreshing) {
@@ -2011,7 +2411,8 @@ export function DashboardPage() {
         ? `New sources are queued for the next scheduled briefing. ${nextUpdateLabel}`
         : nextUpdateLabel,
     };
-  }, [articles.length, currentTimeMs, isFeedRefreshing, lastFeedDisplayAt, lastFeedUpdateRequestAt, pendingUpdate, preferredUpdateTime, sources.length]);
+    */
+  }, [articles.length, isFeedRefreshing, lastFeedUpdateRequestAt, pendingUpdate, sources.length]);
 
   const handleUpdateFeed = useCallback(async () => {
     setUpdating(true);
@@ -2027,6 +2428,7 @@ export function DashboardPage() {
       localStorage.setItem(lastFeedUpdateRequestStorageKey, requestedAt.toISOString());
       setPendingUpdate(false);
       setLastFeedUpdateRequestAt(requestedAt);
+      preUpdateArticleIdsRef.current = new Set(articles.map((a) => a.id));
       setFeedPollState({
         startedAtMs: requestedAt.getTime(),
         baselineArticleCount: articles.length,
@@ -2047,6 +2449,14 @@ export function DashboardPage() {
 
     let cancelled = false;
     let inFlight = false;
+    let consecutiveFailures = 0;
+    let stableConsecutivePolls = 0;
+    let lastSeenArticleCount = feedPollState.baselineArticleCount;
+    let lastSeenLastProcessedAtMs = feedPollState.baselineLastProcessedAtMs;
+    let everSawChange = false;
+    let currentController: AbortController | null = null;
+
+    const STABLE_POLLS_TO_FINISH = 5;
 
     const pollForFeedChanges = async () => {
       if (cancelled || inFlight) {
@@ -2054,32 +2464,66 @@ export function DashboardPage() {
       }
 
       inFlight = true;
+      const controller = new AbortController();
+      currentController = controller;
+      const fetchTimeoutId = window.setTimeout(() => controller.abort(), 15000);
       try {
-        const snapshot = await fetchDashboardSnapshot();
+        const snapshot = await fetchDashboardSnapshot(controller.signal);
         if (cancelled) {
           return;
         }
 
+        consecutiveFailures = 0;
+
+        const elapsedMs = Date.now() - feedPollState.startedAtMs;
         const feedChanged =
-          snapshot.articleCount !== feedPollState.baselineArticleCount ||
+          snapshot.articleCount !== lastSeenArticleCount ||
           (snapshot.lastProcessedAtMs !== null &&
-            (feedPollState.baselineLastProcessedAtMs === null ||
-              snapshot.lastProcessedAtMs > feedPollState.baselineLastProcessedAtMs));
+            (lastSeenLastProcessedAtMs === null ||
+              snapshot.lastProcessedAtMs > lastSeenLastProcessedAtMs));
 
         if (feedChanged) {
-          applyDashboardSnapshot(snapshot);
-          setFeedPollState(null);
-          showToast("Feed updated", "success");
-          return;
+          lastSeenArticleCount = snapshot.articleCount;
+          lastSeenLastProcessedAtMs = snapshot.lastProcessedAtMs;
+          stableConsecutivePolls = 0;
+          everSawChange = true;
+        } else if (everSawChange) {
+          stableConsecutivePolls += 1;
         }
 
-        if (Date.now() - feedPollState.startedAtMs >= 5 * 60 * 1000) {
+        const reachedPlateau = everSawChange && stableConsecutivePolls >= STABLE_POLLS_TO_FINISH;
+        const reachedTimeout = elapsedMs >= FEED_UPDATE_TIMEOUT_MS;
+
+        if (reachedPlateau || reachedTimeout) {
+          applyDashboardSnapshot(snapshot);
           setFeedPollState(null);
-          showToast("Feed update is taking longer than expected. Check back in a few minutes.", "info");
+          const foundNewContent = snapshot.articleCount > feedPollState.baselineArticleCount;
+          if (foundNewContent) {
+            showToast("New Content Added!", "success");
+          } else if (reachedTimeout) {
+            showToast("Feed update is taking longer than expected. Check back in a few minutes.", "info");
+          } else {
+            showToast("No new content found yet", "info");
+          }
         }
       } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        if (error instanceof Error && error.message.includes("429")) {
+          return;
+        }
+        consecutiveFailures += 1;
         console.error("Failed to refresh dashboard feed:", error);
+        if (consecutiveFailures >= 3) {
+          setFeedPollState(null);
+          showToast("We couldn't reach the server. Try Update Feed again in a moment.", "error");
+        }
       } finally {
+        window.clearTimeout(fetchTimeoutId);
+        if (currentController === controller) {
+          currentController = null;
+        }
         inFlight = false;
       }
     };
@@ -2094,6 +2538,7 @@ export function DashboardPage() {
 
     return () => {
       cancelled = true;
+      currentController?.abort();
       window.clearTimeout(initialTimeoutId);
       window.clearInterval(intervalId);
     };
@@ -2119,6 +2564,10 @@ export function DashboardPage() {
           <div style={{ padding: outerPadding, display: "flex", flexDirection: "column", gap: 14, maxWidth: 860, margin: "0 auto" }}>
             {Array.from({ length: 3 }).map((_, i) => <SkeletonCard key={i} />)}
           </div>
+        ) : isFirstTimeUpdating ? (
+          <FirstBriefingLoader padding={outerPadding} />
+        ) : isFirstTimeBeforeUpdate ? (
+          <FirstBriefingPrompt padding={outerPadding} />
         ) : (
           <div style={{ maxWidth: 960, margin: "0 auto", display: "flex", flexDirection: "column", gap: 14 }}>
             <ReaderView
@@ -2339,11 +2788,13 @@ export function DashboardPage() {
             <span style={{ fontSize: 13, fontWeight: 500, color: "var(--sg-text)" }}>
               {loading
                 ? "Loading your digest…"
-                : dashboardMode !== "keyword"
-                  ? `${stats.articleCount} articles across ${stats.sourceCount} sources`
-                  : selectedKeyword
-                    ? `${stats.articleCount} visible articles across ${stats.sourceCount} sources for "${selectedKeyword}" within the last 24 hours`
-                    : "Choose a keyword to focus your feed"}
+                : dashboardMode === "hotTopics"
+                  ? `${hotTopics.length} trending ${hotTopics.length === 1 ? "topic" : "topics"} across ${stats.sourceCount} sources`
+                  : dashboardMode !== "keyword"
+                    ? `${stats.articleCount} articles across ${stats.sourceCount} sources`
+                    : selectedKeyword
+                      ? `${stats.articleCount} visible articles across ${stats.sourceCount} sources for "${selectedKeyword}"`
+                      : "Choose a keyword to focus your feed"}
             </span>
             {today && (
               <span style={{ fontSize: 11.5, color: "var(--sg-muted)", fontWeight: 400 }}>
@@ -2352,7 +2803,7 @@ export function DashboardPage() {
             )}
           </div>
 
-          {!loading && filteredArticles.length > 0 && (
+          {!loading && filteredArticles.length > 0 && dashboardMode !== "hotTopics" && (
             <button
               onClick={handleExpandAll}
               style={{
@@ -2389,12 +2840,17 @@ export function DashboardPage() {
           </div>
         )}
 
+        {/* First-time scrape in progress: show centered loader instead of empty state */}
+        {!loading && isFirstTimeUpdating && (
+          <FirstBriefingLoader />
+        )}
+
         {/* Empty state */}
-        {!loading && sources.length === 0 && (
+        {!loading && !isFirstTimeUpdating && sources.length === 0 && (
           <EmptyState onAddSource={() => navigate("/sources")} />
         )}
 
-        {!loading && dashboardMode === "keyword" && keywords.length === 0 && sources.length > 0 && (
+        {!loading && !isFirstTimeUpdating && dashboardMode === "keyword" && keywords.length === 0 && sources.length > 0 && (
           <div
             style={{
               padding: "22px 20px",
@@ -2412,7 +2868,12 @@ export function DashboardPage() {
           </div>
         )}
 
-        {!loading && sources.length > 0 && filteredArticles.length === 0 && !(dashboardMode === "keyword" && keywords.length === 0) && (
+        {/* First-run prompt: sources added but feed never built */}
+        {!loading && !isFirstTimeUpdating && isFirstTimeBeforeUpdate && dashboardMode !== "keyword" && (
+          <FirstBriefingPrompt />
+        )}
+
+        {!loading && !isFirstTimeUpdating && !isFirstTimeBeforeUpdate && sources.length > 0 && filteredArticles.length === 0 && !(dashboardMode === "keyword" && keywords.length === 0) && dashboardMode !== "hotTopics" && (
           <div
             style={{
               padding: "22px 20px",
@@ -2432,8 +2893,27 @@ export function DashboardPage() {
           </div>
         )}
 
+        {/* Hot Topics */}
+        {!loading && dashboardMode === "hotTopics" && !isFirstTimeUpdating && !isFirstTimeBeforeUpdate && (
+          <HotTopicsView
+            topics={hotTopics}
+            sources={visibleSources}
+            expandedIds={expandedIds}
+            onToggleExpand={toggleExpand}
+            bookmarkedIds={bookmarkedIds}
+            onToggleBookmark={toggleBookmark}
+            seenIds={seenIds}
+            newSinceLastVisit={newSinceLastVisit}
+            summaryModes={summaryModes}
+            onSummaryModeChange={handleSummaryModeChange}
+            loadingModesByArticle={loadingModesByArticle}
+            onTrackLinkClick={handleLinkClick}
+            stats={stats}
+          />
+        )}
+
         {/* Feed grouped by source */}
-        {!loading && visibleSources.length > 0 && filteredArticles.length > 0 && (
+        {!loading && visibleSources.length > 0 && filteredArticles.length > 0 && dashboardMode !== "hotTopics" && (
           <div style={{ display: "flex", flexDirection: "column", gap: isCompact ? 32 : 44 }}>
             {visibleSources.map((source) => {
               const srcArticles = articlesBySource.get(source.id) ?? [];

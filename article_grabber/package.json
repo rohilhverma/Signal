@@ -2,8 +2,9 @@
   "name": "article_grabber",
   "version": "1.0.0",
   "description": "",
-  "main": "article_grabber.js",
+  "main": "server.js",
   "scripts": {
+    "start": "node server.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
@@ -11,13 +12,12 @@
   "license": "ISC",
   "type": "module",
   "dependencies": {
-    "@aws-sdk/client-dynamodb": "^3.1004.0",
-    "@aws-sdk/lib-dynamodb": "^3.1004.0",
     "@google/genai": "^1.46.0",
-    "@sparticuz/chromium": "^133.0.0",
     "axios": "^1.13.5",
     "cheerio": "^1.2.0",
     "dotenv": "^17.3.1",
-    "playwright-core": "^1.58.2"
+    "p-limit": "^6.2.0",
+    "pg": "^8.13.1",
+    "playwright": "^1.58.2"
   }
 }

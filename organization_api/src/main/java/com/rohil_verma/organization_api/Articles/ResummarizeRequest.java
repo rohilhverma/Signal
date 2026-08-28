@@ -1,4 +1,4 @@
-package com.rohil_verma.organization_api.DynamoDB;
+package com.rohil_verma.organization_api.Articles;
 
 public class ResummarizeRequest {
     private String articleLink;

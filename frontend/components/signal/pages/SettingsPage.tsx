@@ -370,7 +370,7 @@ function mergeKeywords(values: string[]): string[] {
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 export function SettingsPage() {
-  const { authenticatedFetch, signOut, user } = useAuth();
+  const { authenticatedFetch, user } = useAuth();
   const { state } = useAppState();
   const {
     theme, setTheme,
@@ -543,21 +543,7 @@ export function SettingsPage() {
                 {user?.email ?? "No email available"}
               </div>
             </div>
-            <button
-              onClick={signOut}
-              style={{
-                fontSize: 12,
-                fontWeight: 600,
-                color: "var(--sg-muted)",
-                backgroundColor: "transparent",
-                border: "1px solid var(--sg-border)",
-                borderRadius: 8,
-                padding: "8px 12px",
-                cursor: "pointer",
-              }}
-            >
-              Sign Out
-            </button>
+
           </div>
 
           {/* Read-only fields */}

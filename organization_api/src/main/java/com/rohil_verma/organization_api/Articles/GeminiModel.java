@@ -1,4 +1,4 @@
-package com.rohil_verma.organization_api.DynamoDB;
+package com.rohil_verma.organization_api.Articles;
 
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;

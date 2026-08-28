@@ -15,7 +15,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RestController;
 
-import com.rohil_verma.organization_api.DynamoDB.DynamoService;
+import com.rohil_verma.organization_api.Articles.ArticleService;
 import com.rohil_verma.organization_api.Users.User;
 import com.rohil_verma.organization_api.Users.UserRequest;
 import com.rohil_verma.organization_api.Users.UserService;
@@ -28,7 +28,7 @@ public class WebsiteController {
     private UserService userService;
 
     @Autowired
-    private DynamoService dynamoService;
+    private ArticleService articleService;
 
     @GetMapping("/links/user")
     public List<String> WebsitesForUser(@AuthenticationPrincipal User currentUser) {
@@ -54,7 +54,7 @@ public class WebsiteController {
 
     @GetMapping("/user/website")
     public Map<String, WebsiteContent> returnUserContent(@AuthenticationPrincipal User currentUser) {
-        return dynamoService.getUserContent(currentUser.getUsername());
+        return articleService.getUserContent(currentUser.getUsername());
     }
 
     @PostMapping("/user/website")
@@ -66,13 +66,13 @@ public class WebsiteController {
 
     @GetMapping("/user/website/cache")
     public ConcurrentMap<String, @NonNull String> getMethodName() {
-        return dynamoService.cacheContent();
+        return articleService.cacheContent();
     }
 
     @PostMapping("/user/url/resummarization")
     public String resummarize(@RequestBody UserRequest request) throws Exception {
-        String result = dynamoService.resummarizeRequest(request.getArticleLink(), request.getWebsiteContentMode());
-        dynamoService.updateSummary(request.getWebsiteURL(), request.getArticleLink(), request.getWebsiteContentMode(), result);
+        String result = articleService.resummarizeRequest(request.getArticleLink(), request.getWebsiteContentMode());
+        articleService.updateSummary(request.getWebsiteURL(), request.getArticleLink(), request.getWebsiteContentMode(), result);
         return result;
     }
 }

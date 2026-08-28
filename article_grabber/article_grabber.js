@@ -1,24 +1,47 @@
 import * as cheerio from 'cheerio'
 import axios from 'axios'
-import { chromium } from 'playwright-core'
-import chromiumLambda from '@sparticuz/chromium'
-import { DynamoDBClient } from '@aws-sdk/client-dynamodb'
-import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb'
-import { GoogleGenAI } from '@google/genai'
-// import "dotenv/config"
+import { chromium } from 'playwright'
+import pLimit from 'p-limit'
+import pg from 'pg'
+import { summarize, batchSize } from './summarizer.js'
+import "dotenv/config"
 
-const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}))
-const ai = new GoogleGenAI({});
-const TABLE = 'MyScrapingHandlerTable'
-const SK = { RSS: 'RSS' }
-const present = new Date()
-const cutoff = new Date(present.getTime() - (36 * 60 * 60 * 1000))
-const prompts={
-    "shorter" : "You are a news wire editor. Summarize each article in 2-3 bullet points. Each bullet must be one sentence, maximum 20 words. Bullet 1: What happened — the core event, stated as a fact. Bullet 2: Who is involved and what specifically they did. Bullet 3 (only if needed): A key number or outcome that adds value. Rules: No filler phrases like \"it's worth noting\" or \"according to\"; No background or history unless critical to understanding the event; If a bullet doesn't add new information, cut it; Start each bullet with the subject, not a verb. Return ONLY a valid JSON array. Do not wrap in markdown backticks or code blocks, only use objects containing \"title\" and \"summary\".",
-    "default" : "You are a news briefing editor. For each article, write a single paragraph summary of 4-6 sentences. Each summary must include: 1. The core event — what happened, stated directly; 2. Context — how this connects to related events or industry trends; 3. Implication — what this signals or why it matters going forward; 4. Key specifics — include relevant numbers, names, and concrete details. Write in a flowing paragraph, not bullet points. Do not use filler phrases. State facts directly with no editorializing. Return ONLY a valid JSON array. Do not wrap in markdown backticks or code blocks, only use objects containing \"title\" and \"summary\".",
-    "longer": "You are a senior analyst writing intelligence briefings. For each article, you MUST write exactly 3 paragraphs separated by blank lines. No more, no fewer.\n\nParagraph 1 — What happened: who was involved, concrete specifics, relevant numbers, names, dates, and technical details from the article.\n\nParagraph 2 — Context: how this event connects to related developments, competing efforts, or previous events. Draw only from information within the article. If the article provides little context, connect the facts and details stated in paragraph 1.\n\nParagraph 3 — Implications: what this signals going forward, based only on what the article states or directly implies. If implications are not explicit, derive them logically from the facts in paragraph 1.\n\nRules:\n- Output MUST be exactly 3 paragraphs separated by blank lines\n- No labels, headers, or markers before paragraphs\n- No filler phrases or editorializing\n- Never introduce outside knowledge\n- Every sentence must be traceable to the article text\n\nReturn ONLY a valid JSON array. Do not wrap in markdown backticks or code blocks, only use objects containing \"title\" and \"summary\"."
+const { Pool } = pg
+
+// Connection settings come from DATABASE_URL if present, otherwise discrete
+// PG* vars, otherwise local defaults.
+const pool = new Pool(
+    process.env.DATABASE_URL
+        ? { connectionString: process.env.DATABASE_URL }
+        : {
+            host: process.env.PGHOST || 'localhost',
+            port: Number(process.env.PGPORT || 5432),
+            database: process.env.PGDATABASE || 'postgres',
+            user: process.env.PGUSER || 'rohilverma',
+            password: process.env.PGPASSWORD,
+        }
+)
+pool.on('error', (err) => console.error('Postgres pool error:', err.message))
+
+export { pool }
+
+// Only ever launch this many headless browsers at once, no matter how many
+// requests are in flight.
+const browserLimit = pLimit(Number(process.env.BROWSER_CONCURRENCY || 3))
+
+const cutoffMs = 24 * 60 * 60 * 1000
+// Hardcoded allowlist: content mode -> summary column. Column names are NEVER
+// taken from user input, only looked up here.
+const SUMMARY_COLUMNS = {
+    "shorter": "summary_short",
+    "default": "summary_default",
+    "longer": "summary_long"
 }
-const promptIndex={"shorter":0,"default":1,"longer":2}
+function summaryColumn(mode) {
+    const column = SUMMARY_COLUMNS[mode]
+    if (!column) { throw new Error(`Unknown content mode: ${mode}`) }
+    return column
+}
 const nonTechPatterns = [
     // --- deal / sale keywords ---
     /\bdeals?\b/i,
@@ -103,72 +126,94 @@ const paywallPhrases = [
 ];
 
 
-async function dbGet(pk, sk) {
-    return dynamo.send(new GetCommand({ TableName: TABLE, Key: { websiteURLs: pk, SK: sk } }))
+// Returns the site_feeds row for a host, or null.
+async function dbGet(websiteUrl) {
+    const { rows } = await pool.query(
+        'SELECT website_url, rss_url, site_name, paywall FROM site_feeds WHERE website_url = $1',
+        [websiteUrl]
+    )
+    return rows[0] || null
 }
 
-async function dbPut(item) {
-    return dynamo.send(new PutCommand({ TableName: TABLE, Item: item }))
+// Upsert the cached RSS URL for a host without disturbing site_name / paywall.
+async function dbPut(websiteUrl, rssUrl) {
+    return pool.query(
+        `INSERT INTO site_feeds (website_url, rss_url)
+         VALUES ($1, $2)
+         ON CONFLICT (website_url) DO UPDATE SET rss_url = EXCLUDED.rss_url`,
+        [websiteUrl, rssUrl]
+    )
 }
 
-async function dbGUID(item){
-    const week = Math.floor(Date.now() / 1000) + (7 * 24 * 60 * 60);
+async function dbSiteName(websiteUrl, siteName) {
+    return pool.query(
+        `INSERT INTO site_feeds (website_url, site_name)
+         VALUES ($1, $2)
+         ON CONFLICT (website_url) DO UPDATE SET site_name = EXCLUDED.site_name`,
+        [websiteUrl, siteName]
+    )
+}
 
-    return dynamo.send(new PutCommand({
-        TableName: TABLE,
-        Item: {
-            websiteURLs: `${item}`,
-            SK: "EXISTS",
-            processedAt: new Date().toISOString(),
-            ttl:week
-        }
-    }))
+async function dbGUID(guid){
+    return pool.query(
+        `INSERT INTO seen_guids (guid, processed_at)
+         VALUES ($1, $2)
+         ON CONFLICT (guid) DO UPDATE SET processed_at = EXCLUDED.processed_at`,
+        [String(guid), new Date()]
+    )
 }
 
 async function guidChecker(guid){
-    return dynamo.send(new GetCommand({TableName: TABLE, Key: {websiteURLs: guid, SK: "EXISTS"}}))
+    const { rows } = await pool.query('SELECT 1 FROM seen_guids WHERE guid = $1', [String(guid)])
+    return rows.length > 0
 }
 
+// Upsert one article. Only the summary column for THIS mode is ever written —
+// the other two slots are left untouched so a user-requested resummarization
+// is never wiped by a later scrape.
 async function newArticle(item, summary, mode){
-    const week = Math.floor(Date.now() / 1000) + (7 * 24 * 60 * 60);
-    const summaryArr = ["", "", ""];
-    summaryArr[promptIndex[mode]] = summary;
-
-    return dynamo.send(new PutCommand({
-        TableName: TABLE,
-        Item: {
-            websiteURLs: item.websiteName,
-            SK: item.link,
-            title: item.title_,
-            summary: summaryArr,
-            articleText: item.articleText,
-            date: item.date,
-            processedAt: new Date().toISOString(),
-            ttl: week,
-            paywall: item.paywall
-        }
-    }))
+    const column = summaryColumn(mode)
+    const sql = `
+        INSERT INTO articles
+            (website_url, link, title, ${column}, article_text, word_count, published_at, processed_at, paywall)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        ON CONFLICT ON CONSTRAINT uk_articles_site_link DO UPDATE SET
+            title = EXCLUDED.title,
+            ${column} = EXCLUDED.${column},
+            article_text = EXCLUDED.article_text,
+            word_count = EXCLUDED.word_count,
+            published_at = EXCLUDED.published_at,
+            processed_at = EXCLUDED.processed_at,
+            paywall = EXCLUDED.paywall`
+    return pool.query(sql, [
+        item.websiteName,
+        item.link,
+        item.title_,
+        summary,
+        item.articleText,
+        item.articleText.trim().split(/\s+/).length,
+        item.publishedAt,
+        new Date(),
+        item.paywall
+    ])
 }
 
-async function flagRSSPaywall(baseUrl){
-    return dynamo.send(new UpdateCommand({
-        TableName: TABLE,
-        Key: { websiteURLs: baseUrl, SK: SK.RSS },
-        UpdateExpression: 'SET paywall = :p',
-        ExpressionAttributeValues: { ':p': true }
-    }))
+async function flagRSSPaywall(websiteUrl){
+    return pool.query(
+        `INSERT INTO site_feeds (website_url, paywall)
+         VALUES ($1, TRUE)
+         ON CONFLICT (website_url) DO UPDATE SET paywall = TRUE`,
+        [websiteUrl]
+    )
 }
 
-async function updateSummary(item, summary,mode){
-    return dynamo.send(new UpdateCommand({
-        TableName: TABLE,
-        Key: {
-        websiteURLs: item.websiteName,
-        SK: item.link
-        },
-        UpdateExpression: `SET summary[${promptIndex[mode]}] = :summary`,
-        ExpressionAttributeValues: {':summary': summary}
-    }))
+// Rewrite a single summary slot on an existing article, leaving the others alone.
+async function updateSummary(item, summary, mode){
+    const column = summaryColumn(mode)
+    return pool.query(
+        `UPDATE articles SET ${column} = $1 WHERE website_url = $2 AND link = $3`,
+        [summary, item.websiteName, item.link]
+    )
 }
 
 const rssPaths = [
@@ -220,25 +265,23 @@ const axiosConfig = {
     timeout: 5000
 };
 
-export const handler = async(event, useContext) => {
-    console.log("Raw body:", event.Records[0].body);
-    const body = JSON.parse(event.Records[0].body)
-    const website = body.website
-    const scrapedWebsite = await initialScraper(website)
-    const jSON = {
-        username: body.username,
-        website: website,
-        data: scrapedWebsite
+// Thrown when no RSS feed could be located for a site — the caller maps this
+// to a 502 rather than a generic 500.
+export class FeedNotFoundError extends Error {
+    constructor(url) {
+        super(`Couldn't grab RSS feed for ${url}`)
+        this.name = 'FeedNotFoundError'
     }
-    console.log(JSON.stringify(jSON, null, 2))
 }
 
-async function initialScraper(url,mode="default") {
+export async function initialScraper(url, mode = "default") {
+    if (!SUMMARY_COLUMNS[mode]) { throw new Error(`Unknown content mode: ${mode}`) }
     const cleanURL = new URL(url)
+    const cutoff = new Date(Date.now() - cutoffMs)
     const data = await linkBuilder(cleanURL)
     if (!data){
         console.log("Couldn't grab RSS feed")
-        return null
+        throw new FeedNotFoundError(url)
     }
     const $ = cheerio.load(data, {xmlMode:true})
     let format = 'rss'
@@ -257,12 +300,7 @@ async function initialScraper(url,mode="default") {
         const rssTitle = $(formats[format].websiteTitle).text().trim()
         webName = (rssTitle && rssTitle.length <= 40) ? rssTitle : cleanURL.hostname.replace('www.', '')
     }
-    await dynamo.send(new UpdateCommand({
-        TableName: TABLE,
-        Key: { websiteURLs: cleanURL.origin, SK: SK.RSS },
-        UpdateExpression: 'SET siteName = :n',
-        ExpressionAttributeValues: { ':n': webName }
-    }))
+    await dbSiteName(cleanURL.host, webName)
     let existingCount=0
     let newCount=0
     let scrapedCount=0
@@ -271,7 +309,7 @@ async function initialScraper(url,mode="default") {
     for (const element of items) {
         const guid = $(element).find(formats[format].guid).text()
         const exists = await guidChecker(guid)
-        if (exists.Item){
+        if (exists){
             existingCount+=1
             console.log(`GUID exists, skipping: ${guid}`)
             continue
@@ -319,12 +357,12 @@ async function initialScraper(url,mode="default") {
             console.log(`Paywall article saved with flag (${textLen} chars): ${link}`)
         }
         const articleContent = {
-            websiteName:url,
+            websiteName: cleanURL.host,
             link: link,
             guid_: guid,
             title_:title,
             articleText: articleTextAndTime.articleText,
-            date:articleTextAndTime.publishDate,
+            publishedAt: date ? new Date(date).toISOString() : null,
             processedAt: new Date().toISOString(),
             paywall: articleTextAndTime.paywallStatus
         }
@@ -334,57 +372,28 @@ async function initialScraper(url,mode="default") {
     }
     const totalProcessed = scrapedCount + paywallCount
     console.log(`Paywall: ${paywallCount}/${totalProcessed} articles`)
+    let sitePaywalled = false
     if (totalProcessed > 0 && paywallCount / totalProcessed >= 0.7) {
         console.log(`70%+ paywall rate detected for ${url}, flagging RSS row`)
-        const baseUrl = new URL(url).origin
-        await flagRSSPaywall(baseUrl)
+        await flagRSSPaywall(cleanURL.host)
+        sitePaywalled = true
     }
-    for (let i = 0 ; i < articleList.length; i += 5){
-        const chunk = articleList.slice(i, i + 5)
-        const chunkIndex = Math.floor(i / 5) + 1
-        console.log(`\n--- CHUNK ${chunkIndex}: Sending ${chunk.length} articles to Gemini ---`)
+    const chunkSize = batchSize()
+    for (let i = 0 ; i < articleList.length; i += chunkSize){
+        const chunk = articleList.slice(i, i + chunkSize)
+        const chunkIndex = Math.floor(i / chunkSize) + 1
+        console.log(`\n--- CHUNK ${chunkIndex}: Sending ${chunk.length} articles to the summarizer ---`)
         chunk.forEach((a, idx) => console.log(`  [${idx}] ${a.title_}`))
-
-        const prompt = chunk.map((x, indx) => `Article ${indx + 1}: ${x.title_}\n${x.articleText}`).join('\n\n')
 
         let summarization = null
         try {
-            const geminiStart = Date.now()
-            const x = await ai.models.generateContent({
-                model:"gemini-2.5-flash",
-                config: {systemInstruction: prompts[mode],
-                    responseMimeType:"application/json",
-                    responseSchema: {
-                    type: 'array',
-                    items: {
-                        type: 'object',
-                        properties: {
-                            title: { type: 'string' },
-                            summary: { type: 'string' }
-                        },
-                        required: ['title', 'summary']
-                    }}
-                },
-                contents:prompt,
-            })
-            const geminiMs = Date.now() - geminiStart
-            console.log(`Gemini responded in ${geminiMs}ms`)
-            console.log("Gemini raw response:", x.text)
-
-            const cleaned = x.text.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim()
-            try {
-                summarization = JSON.parse(cleaned)
-                console.log(`Gemini returned ${summarization.length} summaries for ${chunk.length} articles`)
-                if (summarization.length !== chunk.length) {
-                    console.warn(`--- MISMATCH: expected ${chunk.length}, got ${summarization.length} ---`)
-                }
-            } catch (parseErr) {
-                console.error(`JSON.parse failed for chunk ${chunkIndex}:`, parseErr.message)
-                console.error("Raw text that failed:", x.text)
-                continue
+            summarization = await summarize(chunk, mode)
+            console.log(`Summarizer returned ${summarization.length} summaries for ${chunk.length} articles`)
+            if (summarization.length !== chunk.length) {
+                console.warn(`--- MISMATCH: expected ${chunk.length}, got ${summarization.length} ---`)
             }
-        } catch (geminiErr) {
-            console.error(`Gemini API call failed for chunk ${chunkIndex}:`, geminiErr.message)
+        } catch (summarizeErr) {
+            console.error(`Summarizer failed for chunk ${chunkIndex}:`, summarizeErr.message)
             continue
         }
 
@@ -407,67 +416,81 @@ async function initialScraper(url,mode="default") {
                 newArticles_: newCount,
                 existingArticles_: existingCount
     })
+    if (!sitePaywalled) {
+        // A site flagged as paywalled on an earlier run stays flagged.
+        const feed = await dbGet(cleanURL.host)
+        sitePaywalled = feed?.paywall === true
+    }
+    return {
+        website: url,
+        articlesAdded: newCount,
+        paywalled: sitePaywalled,
+        existingArticles: existingCount
+    }
 }
 
-async function scrapeArticles(url, format) {
+async function scrapeArticles(url) {
     const sourceURL = new URL(url)
     let data = null
     try {
         const response = await axios.get(sourceURL.href)
         data = response.data
     } catch (error) {
-        if (error.response && (error.response.status === 429 || error.response.status === 403)){ 
+        if (error.response && (error.response.status === 429 || error.response.status === 403)) {
             data = await javascriptHTMLScraper(sourceURL.href)
         } else {
             console.log(`Failed to scrape ${url}: ${error.message}`)
-            return {articleText: "couldn't be scraped", publishDate: "couldn't be found"}}
+            return { articleText: null, publishDate: null, paywallStatus: false }
         }
-        if (!data){return {articleText: "couldn't be scraped", publishDate: "couldn't be found"}}
-        const $ = cheerio.load(data)
-        let paywallStatus=false
-        const paywallBySelector = paywallIndicators.some(selector => $(selector).length > 0)
-        const articleBodyText = $(".entry-content, .c-entry-content, article, .article-body, .story-content, main").first().text()
-        const paywallByPhrase = paywallPhrases.some(p => p.test(articleBodyText))
-        if(paywallBySelector || paywallByPhrase){
-            console.log(`Paywall Detected! (${paywallBySelector ? 'selector' : 'phrase'})`)
-            paywallStatus = true
-        }
-        $(
-        '.c-entry-sidebar, ' +      
-        '.c-byline, ' +             
-        '.c-entry-summary, ' +      
-        '.c-newsletter-signup, ' +  
-        'aside, ' +                 
-        '.native-ad, ' +            
-        '.featured-image-caption'   
-        ).remove();
-        const publishDate = 
-            $('time').attr('datetime') ||                                     
-            $('meta[property="article:published_time"]').attr('content') ||   
-            $('meta[name="pubdate"]').attr('content') ||                      
-            $('meta[name="date"]').attr('content') ||                         
-            null;    
-        const articleText = $(".entry-content p, .c-entry-content p, article p, .article-body p, .story-content p, .content__body p, #content--body p, .article-content p, main p")
-        .map((index, element) => $(element).text())
-       .get()
+    }
+    if (!data) {
+        return { articleText: null, publishDate: null, paywallStatus: false }
+    }
+    const $ = cheerio.load(data)
+    let paywallStatus = false
+    const paywallBySelector = paywallIndicators.some(selector => $(selector).length > 0)
+    const articleBodyText = $(".entry-content, .c-entry-content, article, .article-body, .story-content, main").first().text()
+    const paywallByPhrase = paywallPhrases.some(p => p.test(articleBodyText))
+    if (paywallBySelector || paywallByPhrase) {
+        console.log(`Paywall Detected! (${paywallBySelector ? 'selector' : 'phrase'})`)
+        paywallStatus = true
+    }
+    $(
+        '.c-entry-sidebar, ' +
+        '.c-byline, ' +
+        '.c-entry-summary, ' +
+        '.c-newsletter-signup, ' +
+        'aside, ' +
+        '.native-ad, ' +
+        '.featured-image-caption'
+    ).remove()
+    const publishDate =
+        $('time').attr('datetime') ||
+        $('meta[property="article:published_time"]').attr('content') ||
+        $('meta[name="pubdate"]').attr('content') ||
+        $('meta[name="date"]').attr('content') ||
+        null
+    const articleText = $(".entry-content p, .c-entry-content p, article p, .article-body p, .story-content p, .content__body p, #content--body p, .article-content p, main p")
+        .map((_, element) => $(element).text())
+        .get()
         .filter(text => text.length > 0)
         .join('\n\n')
-        .trim();    
-        
-        return {articleText, publishDate, paywallStatus}
-    }
+        .trim()
+    return { articleText, publishDate, paywallStatus }
+}
 
 async function linkBuilder(url) {
     const baseUrl = url.origin
+    const pk = url.host
 
-    const cached = await dbGet(baseUrl, SK.RSS)
-    if (cached.Item) {
+    const cached = await dbGet(pk)
+    if (cached && cached.rss_url) {
         try {
-            const response = await axios.get(cached.Item.rss_url, axiosConfig)
+            const response = await axios.get(cached.rss_url, axiosConfig)
             console.log("RSS Feed Found, Using")
             return response.data
         } catch(err){
-            const xmlData = await javascriptBypasser(cached.Item.rss_url)
+            const xmlData = await javascriptBypasser(cached.rss_url)
             if (xmlData){ return xmlData }
             else { return null }
         }
@@ -489,58 +512,54 @@ async function linkBuilder(url) {
             }
         }
         try {
-            await dbPut({ websiteURLs: baseUrl, SK: SK.RSS, rss_url: testURL })
+            await dbPut(pk, testURL)
         } catch(err) {
-            console.log(`DynamoDB PutCommand failed: ${err.message}`)
+            console.log(`Postgres site_feeds upsert failed: ${err.message}`)
         }
         return feedData
     }
     return null
 }
 
+// Fallback path only (429 / 403 / 503). Every launch goes through browserLimit
+// so simultaneous blocked sites can't spawn unbounded Chromium processes.
 async function javascriptBypasser(url){
-    const browser = await chromium.launch({
-        args: chromiumLambda.args,
-        executablePath: await chromiumLambda.executablePath(),
-        headless: true,
+    return browserLimit(async () => {
+        const browser = await chromium.launch({ headless: true })
+        const page = await browser.newPage()
+        try {
+            const baseUrl = new URL(url).origin
+            await page.goto(baseUrl, { waitUntil: 'domcontentloaded' })
+            await page.waitForSelector('header', { timeout: 15000 })
+            const rawXML = await page.evaluate(async (feedUrl) => {
+                const res = await fetch(feedUrl)
+                return await res.text()
+            }, url)
+            return rawXML
+        } catch(error){
+            console.log(`Playwright failed of ${url}:${error.message}`)
+            return null
+        } finally {
+            await browser.close()
+        }
     })
-    const page = await browser.newPage()
-    try {
-        const baseUrl = new URL(url).origin
-        await page.goto(baseUrl, { waitUntil: 'domcontentloaded' })
-        await page.waitForSelector('header', { timeout: 15000 })
-        const rawXML = await page.evaluate(async (feedUrl) => {
-            const res = await fetch(feedUrl)
-            return await res.text()
-        }, url)
-        return rawXML
-    } catch(error){
-        console.log(`Playwright failed of ${url}:${error.message}`)
-        return null
-    } finally {
-        await browser.close()
-    }
 }
 
 async function javascriptHTMLScraper(url){
-    const browser = await chromium.launch({
-        args: chromiumLambda.args,
-        executablePath: await chromiumLambda.executablePath(),
-        headless: true,
+    return browserLimit(async () => {
+        const browser = await chromium.launch({ headless: true })
+        const page = await browser.newPage()
+        try {
+            console.log(`Playwright is trying to grab Article HTML: ${url}`)
+            await page.goto(url, { waitUntil: 'domcontentloaded' })
+            await page.waitForSelector('.entry-content, .c-entry-content, .article-body, article', { timeout: 10000 });
+            const rawHTML = await page.content()
+            return rawHTML
+        } catch(error){
+            console.log(`Playwright couldn't grab the article HTML ${url}`)
+            return null
+        } finally {
+            await browser.close()
+        }
     })
-    const page = await browser.newPage()
-    try {
-        console.log(`Playwright is trying to grab Article HTML: ${url}`)
-        await page.goto(url, { waitUntil: 'domcontentloaded' })
-        await page.waitForSelector('.entry-content, .c-entry-content, .article-body, article', { timeout: 10000 });
-        const rawHTML = await page.content()
-        return rawHTML
-    } catch(error){
-        console.log(`Playwright couldn't grab the article HTML ${url}`)
-        return null
-    } finally {
-        await browser.close()
-    }
 }
-
-// initialScraper("https://theverge.com")

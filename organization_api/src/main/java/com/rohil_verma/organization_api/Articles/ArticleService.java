@@ -1,5 +1,7 @@
-package com.rohil_verma.organization_api.DynamoDB;
+package com.rohil_verma.organization_api.Articles;
 
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -16,23 +18,24 @@ import com.github.benmanes.caffeine.cache.Caffeine;
 import com.rohil_verma.organization_api.Users.UserService;
 import com.rohil_verma.organization_api.Website.WebsiteContent;
 
-import software.amazon.awssdk.services.dynamodb.DynamoDbClient;
-import software.amazon.awssdk.services.dynamodb.model.AttributeValue;
-import software.amazon.awssdk.services.dynamodb.model.QueryRequest;
-import software.amazon.awssdk.services.dynamodb.model.QueryResponse;
-import software.amazon.awssdk.services.dynamodb.model.UpdateItemRequest;
+import org.springframework.http.HttpStatus;
+import org.springframework.web.server.ResponseStatusException;
+
 
 import org.springframework.scheduling.annotation.Async;
 import static java.util.Map.entry;
 
 @Service
-public class DynamoService{
+public class ArticleService {
 
     @Autowired
     private UserService userService;
     
     @Autowired
-    private DynamoDbClient dynamoDbClient;
+    private ArticleRepository articleRepository;
+
+    @Autowired
+    private SiteFeedRepository siteFeedRepository;
 
     @Autowired
     private GeminiModel geminiModel;
@@ -47,52 +50,59 @@ public class DynamoService{
     .expireAfterWrite(1,TimeUnit.DAYS)
     .build();
 
+    private Cache<String, Map<String,WebsiteContent>> userContentCache = Caffeine.newBuilder()
+    .expireAfterWrite(30, TimeUnit.SECONDS)
+    .build();
+
+    private static final int FRESHNESS_HOURS = 24;
+
     public Map<String, WebsiteContent> getUserContent(String username){
-        List<String> userWebsites= userService.getWebsitesForUser(username);
+        Map<String, WebsiteContent> cached = userContentCache.getIfPresent(username);
+        if (cached != null) return cached;
+
+        List<String> userWebsites = userService.getWebsitesForUser(username);
 
         Map<String, WebsiteContent> returnMap = new HashMap<>();
+        if (userWebsites.isEmpty()) {
+            userContentCache.put(username, returnMap);
+            return returnMap;
+        }
+
+        Instant cutoff = Instant.now().minus(FRESHNESS_HOURS, ChronoUnit.HOURS);
+
+        Map<String, SiteFeed> feeds = new HashMap<>();
+        for (SiteFeed feed : siteFeedRepository.findByWebsiteURLIn(userWebsites)) {
+            feeds.put(feed.getWebsiteURL(), feed);
+        }
+
+        Map<String, List<Map<String, Map<String, String>>>> articlesBySite = new HashMap<>();
+        for (ArticleFeedView view : articleRepository
+                .findByWebsiteURLInAndProcessedAtAfterOrderByProcessedAtDesc(userWebsites, cutoff)) {
+            if (view.getTitle() == null || view.getPublishedAt() == null) continue;
+
+            Map<String, String> articleContents = new HashMap<>();
+            articleContents.put("date", view.getPublishedAt());
+            articleContents.put("processedAt", view.getProcessedAt().toString());
+            articleContents.put("link", view.getLink());
+            articleContents.put("summaryDefault", view.getSummaryDefault() != null ? view.getSummaryDefault() : "");
+            articleContents.put("summaryShort", view.getSummaryShort() != null ? view.getSummaryShort() : "");
+            articleContents.put("summaryLong", view.getSummaryLong() != null ? view.getSummaryLong() : "");
+            articleContents.put("wordCount", view.getWordCount() != null ? String.valueOf(view.getWordCount()) : "0");
+
+            Map<String, Map<String, String>> article = new HashMap<>();
+            article.put(view.getTitle(), articleContents);
+            articlesBySite.computeIfAbsent(view.getWebsiteURL(), key -> new ArrayList<>()).add(article);
+        }
 
         for (String website : userWebsites) {
-            QueryRequest request = QueryRequest.builder()
-            .tableName("MyScrapingHandlerTable")
-            .keyConditionExpression("websiteURLs = :pk")
-            .expressionAttributeValues(Map.of(
-                ":pk", AttributeValue.builder().s(website).build()
-            ))
-            .build();
-
-            QueryResponse response = dynamoDbClient.query(request);
-            String paywallStatus = null;
-            String siteName="";
-            List<Map<String, Map<String, String>>> articleList = new ArrayList<>();
-
-            for (Map<String,AttributeValue> item : response.items()){
-                AttributeValue sk=item.get("SK");
-                if (sk != null && "RSS".equals(sk.s())) {
-                    AttributeValue paywall = item.get("paywall");
-                    AttributeValue siteNameAttribute = item.get("siteName");
-                    paywallStatus = paywall != null ? String.valueOf(paywall.bool()) : null;
-                    siteName = siteNameAttribute != null ? siteNameAttribute.s() : "";
-                    continue;
-                }
-
-                if (item.get("title") == null || item.get("summary") == null|| item.get("date") == null || item.get("articleText") == null || item.get("processedAt") == null) continue;
-
-                List<AttributeValue> summaryList = item.get("summary").l();
-                Map<String, String> articleContents = new HashMap<>();
-                articleContents.put("date", item.get("date").s());
-                articleContents.put("processedAt", item.get("processedAt").s());
-                articleContents.put("link", item.get("SK").s());
-                articleContents.put("summaryDefault", summaryList.size() > 1 ? summaryList.get(1).s() : "");
-                articleContents.put("summaryShort",   summaryList.size() > 0 ? summaryList.get(0).s() : "");
-                articleContents.put("summaryLong",    summaryList.size() > 2 ? summaryList.get(2).s() : "");
-                Map<String, Map<String, String>> article = new HashMap<>();
-                article.put(item.get("title").s(), articleContents);
-                articleList.add(article);
-                articleTextCache.put(item.get("SK").s(),item.get("articleText").s());
-            }
-            returnMap.put(website, new WebsiteContent(paywallStatus, siteName,articleList));
+            SiteFeed feed = feeds.get(website);
+            String paywallStatus = (feed != null && feed.getPaywall() != null) ? String.valueOf(feed.getPaywall()) : null;
+            String siteName = (feed != null && feed.getSiteName() != null) ? feed.getSiteName() : "";
+            returnMap.put(website, new WebsiteContent(paywallStatus, siteName,
+                articlesBySite.getOrDefault(website, new ArrayList<>())));
         }
+
+        userContentCache.put(username, returnMap);
         return returnMap;
     }
 
@@ -102,26 +112,26 @@ public class DynamoService{
 
     @Async
     public void updateSummary(String pk, String articleUrl, String mode, String resummarization) throws Exception {
-        int index = mode.equals("shorter") ? 0 : mode.equals("default") ? 1 : 2;
-        UpdateItemRequest request = UpdateItemRequest.builder()
-            .tableName("MyScrapingHandlerTable")
-            .key(Map.of(
-                "websiteURLs", AttributeValue.builder().s(pk).build(),
-                "SK", AttributeValue.builder().s(articleUrl).build()
-            ))
-            .updateExpression("SET summary[" + index + "] = :resummarization")
-            .expressionAttributeValues(Map.of(
-                ":resummarization", AttributeValue.builder().s(resummarization).build()
-            ))
-            .build();
-        dynamoDbClient.updateItem(request);
+        int updated = switch (mode) {
+            case "shorter" -> articleRepository.updateSummaryShort(pk, articleUrl, resummarization);
+            case "default" -> articleRepository.updateSummaryDefault(pk, articleUrl, resummarization);
+            default -> articleRepository.updateSummaryLong(pk, articleUrl, resummarization);
+        };
+        if (updated == 0) {
+            System.out.println("[RESUMMARIZE] no article matched site=" + pk + " link=" + articleUrl
+                + " - summary was generated but not persisted");
+        }
     }
 
     public String resummarizeRequest(String url, String mode){
         String articleText = articleTextCache.getIfPresent(url);
-        if (articleText == null) return "Cache miss: call /user/website first to warm the cache for this URL.";
+        if (articleText == null) {
+            articleText = articleRepository.findArticleTextByLink(url);
+            if (articleText != null) articleTextCache.put(url, articleText);
+        }
+        if (articleText == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "No stored article text for " + url);
+        }
         return geminiModel.handleResummarize(mode, promptMap.get(mode), articleText);
     }
-    
-
 }
