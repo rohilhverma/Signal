@@ -1,23 +1,33 @@
 package com.rohil_verma.organization_api.Users;
 
+import java.time.Instant;
+import java.time.temporal.ChronoUnit;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.stream.Collectors;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import com.rohil_verma.organization_api.Articles.ArticleRepository;
+import com.rohil_verma.organization_api.Articles.ArticleService;
 import com.rohil_verma.organization_api.Jobs.ScrapeJob;
 import com.rohil_verma.organization_api.Jobs.ScrapeJobRunner;
 import com.rohil_verma.organization_api.Jobs.ScrapeJobService;
+import com.rohil_verma.organization_api.Personalization.ProfileService;
 import com.rohil_verma.organization_api.UserActivity;
 
 @Service
 @Transactional
 public class UserService {
+
+    private static final Logger log = LoggerFactory.getLogger(UserService.class);
 
     @Autowired
     private UserRepository userRepository;
@@ -26,13 +36,22 @@ public class UserService {
     private SubscriptionRepository subscriptionRepository;
 
     @Autowired
+    private ArticleRepository articleRepository;
+
+    @Autowired
     private UserActivityRepository userActivityRepository;
+
+    @Autowired
+    private UserActiveDayRepository userActiveDayRepository;
 
     @Autowired
     private ScrapeJobService scrapeJobService;
 
     @Autowired
     private ScrapeJobRunner scrapeJobRunner;
+
+    @Autowired
+    private ProfileService profileService;
 
     static String normalizeWebsiteUrl(String input) {
         if (input == null) {
@@ -87,17 +106,98 @@ public class UserService {
     }
 
     /**
+     * {@link #getWebsitesForUser} minus anything currently muted - the list a reader should
+     * actually see. The dashboard, search and For You all scope through here, so muting a
+     * source removes it from every read path at once.
+     *
+     * <p>Source management deliberately keeps using the unfiltered list. Filter there too and
+     * a muted source would vanish from the only screen that can un-mute it.
+     */
+    public List<String> getVisibleWebsitesForUser(String username) {
+        Instant now = Instant.now();
+        return userRepository.findByUsername(username)
+            .map(user -> user.getSubscriptions().values().stream()
+                .filter(sub -> !sub.isMuted(now))
+                .map(Subscription::getWebsiteURL)
+                .toList())
+            .orElse(List.of());
+    }
+
+    /**
      * Website URL to the subscription's content mode, for callers that need to act on the
      * per-source mode rather than just the list of sites.
+     *
+     * <p>This is the scrape path, so it filters on {@link Subscription#isMutedIndefinitely()}
+     * and not {@link Subscription#isMuted}: a timed snooze keeps collecting in the background
+     * so that coming back to it finds a populated backlog, and only an open-ended mute is
+     * worth stopping the nightly work - and the summarizer spend - for.
      */
     public Map<String, String> getSubscriptionModesForUser(String username) {
         return userRepository.findByUsername(username)
             .map(user -> user.getSubscriptions().entrySet().stream()
+                .filter(entry -> !entry.getValue().isMutedIndefinitely())
                 .collect(Collectors.toMap(
                     Map.Entry::getKey,
                     entry -> entry.getValue().getContentMode() == null ? "" : entry.getValue().getContentMode()
                 )))
             .orElse(Map.of());
+    }
+
+    /**
+     * Every subscribed site with its mute state, for the sources screen. Sorted by URL so the
+     * list does not reshuffle between renders.
+     */
+    public List<SubscriptionDTO> getSubscriptionsForUser(String username) {
+        Instant now = Instant.now();
+        User user = userRepository.findByUsername(username).orElse(null);
+        if (user == null) return List.of();
+
+        // Counted here rather than derived on the client from the dashboard payload: that
+        // payload omits muted sources, so a client-side tally would report every muted
+        // source as empty.
+        List<String> sites = user.getSubscriptions().keySet().stream().toList();
+        Map<String, Long> counts = sites.isEmpty() ? Map.of() : articleRepository
+            .countByWebsiteURLSince(sites, now.minus(ArticleService.FRESHNESS_HOURS, ChronoUnit.HOURS))
+            .stream()
+            .collect(Collectors.toMap(row -> (String) row[0], row -> (Long) row[1]));
+
+        return user.getSubscriptions().values().stream()
+            .sorted(Comparator.comparing(Subscription::getWebsiteURL))
+            .map(sub -> new SubscriptionDTO(
+                sub.getWebsiteURL(),
+                sub.getContentMode() == null ? "" : sub.getContentMode(),
+                sub.isMuted(now) ? sub.getMutedUntil() : null,
+                sub.isMuted(now) && sub.isMutedIndefinitely(),
+                counts.getOrDefault(sub.getWebsiteURL(), 0L).intValue()))
+            .toList();
+    }
+
+    /**
+     * Mutes a source until {@code until}, or with no end date when that is
+     * {@link Subscription#MUTED_INDEFINITELY}. A null {@code until} clears the mute.
+     *
+     * <p>Deliberately leaves {@code user_scores} alone. Muting is a display decision, and
+     * decaying the affinity behind it would mean un-muting a source you liked for a year
+     * hands you back a stranger.
+     */
+    public ResponseEntity<String> setMuteForUser(String username, String websiteURL, Instant until) {
+        String normalizedURL;
+        try {
+            normalizedURL = normalizeWebsiteUrl(websiteURL);
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(e.getMessage());
+        }
+
+        User user = userRepository.findByUsername(username).orElse(null);
+        if (user == null) return ResponseEntity.status(404).body("User not found");
+
+        Subscription sub = user.getSubscriptions().get(normalizedURL);
+        if (sub == null) return ResponseEntity.status(404).body("Not subscribed to " + normalizedURL);
+
+        sub.setMutedUntil(until);
+        subscriptionRepository.save(sub);
+        log.info("{} {} for {}", until == null ? "Unmuted" : "Muted until " + until, normalizedURL, username);
+        return ResponseEntity.ok(until == null ? "Unmuted" : "Muted");
     }
 
     public List<String> getWebsites() {
@@ -260,14 +360,27 @@ public class UserService {
     public ResponseEntity<String> saveUserActivity(UserActivityDTO userActivity) {
         try {
             User user = userRepository.findByUsername(userActivity.getUsername()).orElseThrow();
-            userActivity.getActivity().forEach((link, score) -> {
-                UserActivity activity = new UserActivity();
-                activity.setUser(user);
-                activity.setArticleLink(link);
-                activity.setScore(score);
-                System.out.println(activity);
-                userActivityRepository.save(activity);
-            });
+            userActivity.getActivity().forEach((link, score) ->
+                userActivityRepository.upsertActivity(user.getId(), link, score));
+
+            // Marks TODAY active, independent of the per-article upserts above. This is
+            // deliberately its own row rather than something read back out of
+            // user_activity - see UserActiveDay for why that table can't answer "which
+            // days was this user active" on its own. Only fires when the flush actually
+            // contains an article; an empty batch proves nothing about today.
+            if (!userActivity.getActivity().isEmpty()) {
+                userActiveDayRepository.markActive(user.getId(), java.time.LocalDate.now());
+            }
+
+            try {
+                profileService.applyActivity(user.getId(), userActivity.getActivity());
+            } catch (Exception e) {
+                // Caught here, not left to propagate: this whole method is @Transactional,
+                // so an uncaught exception here would roll back the activity upsert above
+                // too. Swallowing it (after logging) is what keeps profiling best-effort.
+                log.warn("Failed to update personalization profile for user {}", user.getUsername(), e);
+            }
+
             return ResponseEntity.ok("Activity recorded");
         } catch (Exception e) {
             e.printStackTrace();

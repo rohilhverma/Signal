@@ -24,6 +24,19 @@ export type ContentProfile = "short" | "standard" | "deepDive";
 export interface ManagedSource extends Source {
   contentProfile: ContentProfile;
   articleCount: number;
+  /** ISO instant while hidden, null while live. Never a lapsed date - the server clears it. */
+  mutedUntil: string | null;
+  /** A mute with no end date, which also stops the nightly scrape for this source. */
+  mutedIndefinitely: boolean;
+}
+
+/** One row of GET /user/sources. Mirrors SubscriptionDTO on the backend. */
+export interface ServerSource {
+  websiteURL: string;
+  contentMode: string;
+  mutedUntil: string | null;
+  indefinite: boolean;
+  articleCount: number;
 }
 
 export interface BookmarkedArticle {
@@ -75,6 +88,8 @@ export interface AppState {
 
 type AppAction =
   | { type: "ADD_SOURCE"; payload: Source }
+  | { type: "HYDRATE_SOURCES"; payload: ServerSource[] }
+  | { type: "SET_SOURCE_ACCENT"; payload: { sourceId: string; faviconUrl: string; accentColor: string } }
   | { type: "REMOVE_SOURCE"; payload: string }
   | { type: "SET_SOURCE_PROFILE"; payload: { sourceId: string; profile: ContentProfile } }
   | { type: "SET_ARTICLES"; payload: Article[] }
@@ -105,23 +120,105 @@ function buildArticleInteractionScoreMap(
   }, {});
 }
 
+// pagehide and visibilitychange-to-hidden both fire for the same navigation, so a naive
+// flush-on-either posts the same cumulative snapshot twice. Comparing against what was
+// last sent turns the second call into a no-op instead.
+function activityMapsEqual(a: Record<string, number>, b: Record<string, number>): boolean {
+  const aKeys = Object.keys(a);
+  const bKeys = Object.keys(b);
+  if (aKeys.length !== bKeys.length) return false;
+  return aKeys.every((key) => a[key] === b[key]);
+}
+
 // ─── Reducer ─────────────────────────────────────────────────────────────────
 
 function appReducer(state: AppState, action: AppAction): AppState {
   switch (action.type) {
     case "ADD_SOURCE": {
       const already = state.sources.find((s) => s.id === action.payload.id);
-      if (already) return state;
+      if (already) {
+        // The dashboard resolves presentation the context cannot: the site's real name from
+        // the feed payload, and an accent sampled off its favicon. HYDRATE_SOURCES runs
+        // first and seeds placeholders, so bailing out here froze every source on the grey
+        // default. Only presentation merges - contentProfile, articleCount and mute state
+        // stay authoritative from the server.
+        const incoming = action.payload as ManagedSource;
+        const presentation = {
+          name: incoming.name || already.name,
+          domain: incoming.domain || already.domain,
+          faviconUrl: incoming.faviconUrl || already.faviconUrl,
+          accentColor: incoming.accentColor || already.accentColor,
+          paywall: incoming.paywall ?? already.paywall,
+        };
+        // The dashboard re-adds every source on each feed poll. Returning a new object when
+        // nothing changed would churn the array identity and re-render the whole feed on a
+        // timer, which is what the old early return was quietly buying.
+        const changed = (Object.keys(presentation) as (keyof typeof presentation)[])
+          .some((key) => presentation[key] !== already[key]);
+        if (!changed) return state;
+
+        const merged: ManagedSource = { ...already, ...presentation };
+        return {
+          ...state,
+          sources: state.sources.map((item) => (item.id === merged.id ? merged : item)),
+          bookmarks: state.bookmarks.map((b) =>
+            b.source.id === merged.id ? { ...b, source: merged } : b
+          ),
+        };
+      }
       const newSource: ManagedSource = {
         ...action.payload,
         contentProfile: (action.payload as ManagedSource).contentProfile ?? "standard",
         articleCount: 0,
+        mutedUntil: null,
+        mutedIndefinitely: false,
       };
       return {
         ...state,
         sources: [...state.sources, newSource],
         bookmarks: state.bookmarks.map((b) =>
           b.source.id === newSource.id ? { ...b, source: newSource } : b
+        ),
+      };
+    }
+
+    case "HYDRATE_SOURCES": {
+      // The server owns which sources exist and whether they are muted; the client owns
+      // what it worked out about each one (resolved favicon, accent, article count).
+      // Merging rather than replacing is what keeps a hydrate from flashing every card
+      // back to the placeholder favicon.
+      //
+      // Sources the server no longer lists are dropped, but their articles and bookmarks
+      // are left alone - a muted source still has bookmarks worth keeping, and REMOVE_SOURCE
+      // remains the only path that deliberately discards them.
+      const byId = new Map(state.sources.map((source) => [source.id, source]));
+      return {
+        ...state,
+        sources: action.payload.map((row) => ({
+          ...(byId.get(row.websiteURL) ?? createFallbackManagedSource(row.websiteURL)),
+          contentProfile: (row.contentMode || "standard") as ContentProfile,
+          mutedUntil: row.mutedUntil,
+          mutedIndefinitely: row.indefinite,
+          articleCount: row.articleCount,
+        })),
+      };
+    }
+
+    case "SET_SOURCE_ACCENT": {
+      // Sets only the two fields sampled from the favicon, never the name: the feed payload
+      // carries the site's own name ("Ars Technica", not "Arstechnica") and this must not
+      // overwrite it with anything cruder.
+      const { sourceId, faviconUrl, accentColor } = action.payload;
+      const target = state.sources.find((item) => item.id === sourceId);
+      if (!target || (target.faviconUrl === faviconUrl && target.accentColor === accentColor)) {
+        return state;
+      }
+      const updated: ManagedSource = { ...target, faviconUrl, accentColor };
+      return {
+        ...state,
+        sources: state.sources.map((item) => (item.id === sourceId ? updated : item)),
+        bookmarks: state.bookmarks.map((b) =>
+          b.source.id === sourceId ? { ...b, source: updated } : b
         ),
       };
     }
@@ -318,6 +415,9 @@ interface AppStateContextValue {
   addSource: (source: Source) => void;
   removeSource: (sourceId: string) => void;
   setSourceProfile: (sourceId: string, profile: ContentProfile) => void;
+  refreshSources: () => Promise<void>;
+  muteSource: (sourceId: string, days: number | null) => Promise<boolean>;
+  unmuteSource: (sourceId: string) => Promise<boolean>;
   setArticles: (articles: Article[]) => void;
   patchArticleSummary: (articleId: string, mode: SummaryMode, text: string) => void;
   saveBookmark: (article: Article, source: Source, summaryMode: SummaryMode) => Promise<boolean>;
@@ -329,6 +429,46 @@ interface AppStateContextValue {
 }
 
 const AppStateContext = createContext<AppStateContextValue | null>(null);
+
+/**
+ * A displayable source from nothing but its id. Muted sources are absent from
+ * /user/website by design, so the sources screen has no feed payload to derive a name or
+ * favicon from and has to synthesise both from the domain.
+ */
+export function createFallbackManagedSource(sourceId: string): ManagedSource {
+  try {
+    // sourceId is a bare domain everywhere in this app (it's what the backend stores
+    // and matches on) - URL() needs a scheme to parse a hostname out of it at all.
+    const url = new URL(/^https?:\/\//i.test(sourceId) ? sourceId : `https://${sourceId}`);
+    const hostname = url.hostname.replace(/^www\./, "");
+    return {
+      id: sourceId,
+      name: hostname.split(".")[0].replace(/^\w/, (char) => char.toUpperCase()),
+      domain: hostname,
+      // Through our own route rather than Google directly - /api/favicon/image exists so the
+      // browser never tells Google which sites you read. This builder now supplies the
+      // favicon for every hydrated source, so going direct would leak the whole list at once.
+      faviconUrl: `/api/favicon/image?domain=${hostname}`,
+      accentColor: DEFAULT_ACCENT,
+      contentProfile: "standard",
+      articleCount: 0,
+      mutedUntil: null,
+      mutedIndefinitely: false,
+    };
+  } catch {
+    return {
+      id: sourceId,
+      name: sourceId,
+      domain: sourceId,
+      faviconUrl: "",
+      accentColor: DEFAULT_ACCENT,
+      contentProfile: "standard",
+      articleCount: 0,
+      mutedUntil: null,
+      mutedIndefinitely: false,
+    };
+  }
+}
 
 function createFallbackSource(articleLink: string): Source {
   try {
@@ -389,6 +529,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   const { authenticatedFetch } = useAuth();
   const [state, dispatch] = useReducer(appReducer, initialState);
   const latestInteractionsRef = useRef(state.articleInteractions);
+  const lastFlushedActivityRef = useRef<Record<string, number>>({});
 
   useEffect(() => {
     latestInteractionsRef.current = state.articleInteractions;
@@ -531,6 +672,16 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         return;
       }
 
+      // pagehide and visibilitychange-to-hidden fire back to back for one navigation,
+      // before a keepalive request has any chance to resolve — there is no "wait for
+      // success" moment during unload to hang this guard on. Recording the attempt
+      // synchronously, before the fetch settles, is what makes the second event a
+      // no-op instead of a duplicate POST of the same cumulative snapshot.
+      if (activityMapsEqual(activity, lastFlushedActivityRef.current)) {
+        return;
+      }
+      lastFlushedActivityRef.current = activity;
+
       const payload = { activity };
 
       console.log("[signal] article interaction beacon payload", payload);
@@ -563,6 +714,90 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     };
   }, [authenticatedFetch]);
 
+  /**
+   * Pulls the authoritative source list. Kept separate from the dashboard fetch because
+   * /user/website deliberately omits muted sources - reading the list from there would
+   * make a source disappear from the one screen that can bring it back.
+   */
+  // Sources whose accent has already been sampled. refreshSources runs after every mute
+  // toggle, and without this each toggle would re-fetch a favicon for all ten sites.
+  const enrichedRef = useRef<Set<string>>(new Set());
+
+  /**
+   * Samples each source's accent colour from its favicon. This lives here rather than in
+   * the dashboard because the sources screen needs the colours too, and gating them on a
+   * completed dashboard fetch means landing anywhere else shows ten identical grey rows.
+   */
+  const enrichSourceAccents = useCallback((rows: ServerSource[]) => {
+    rows.forEach(async (row) => {
+      if (enrichedRef.current.has(row.websiteURL)) return;
+      enrichedRef.current.add(row.websiteURL);
+      const hostname = row.websiteURL.replace(/^https?:\/\//i, "").replace(/^www\./, "");
+      try {
+        const fav = await fetch(`/api/favicon?domain=${hostname}`)
+          .then((r) => r.json()) as { faviconUrl: string; color: string };
+        dispatch({
+          type: "SET_SOURCE_ACCENT",
+          payload: { sourceId: row.websiteURL, faviconUrl: fav.faviconUrl, accentColor: fav.color },
+        });
+      } catch {
+        // Drop the claim so a later hydrate can retry rather than leaving it grey forever.
+        enrichedRef.current.delete(row.websiteURL);
+      }
+    });
+  }, []);
+
+  const refreshSources = useCallback(async () => {
+    try {
+      const res = await authenticatedFetch("/api/user/sources");
+      if (!res.ok) return;
+      const rows = (await res.json()) as ServerSource[];
+      dispatch({ type: "HYDRATE_SOURCES", payload: rows });
+      enrichSourceAccents(rows);
+    } catch {
+      // Keeping the last known list beats blanking the sources screen on a transient failure.
+    }
+  }, [authenticatedFetch, enrichSourceAccents]);
+
+  useEffect(() => {
+    void refreshSources();
+  }, [refreshSources]);
+
+  /** days === null mutes with no end date, which also stops the nightly scrape. */
+  const muteSource = useCallback(
+    async (sourceId: string, days: number | null): Promise<boolean> => {
+      try {
+        const res = await authenticatedFetch("/api/user/website/mute", {
+          method: "POST",
+          body: JSON.stringify(days === null ? { websiteURL: sourceId } : { websiteURL: sourceId, days }),
+        });
+        if (!res.ok) return false;
+        await refreshSources();
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [authenticatedFetch, refreshSources]
+  );
+
+  const unmuteSource = useCallback(
+    async (sourceId: string): Promise<boolean> => {
+      try {
+        const res = await authenticatedFetch("/api/user/website/mute", {
+          method: "DELETE",
+          body: JSON.stringify({ websiteURL: sourceId }),
+        });
+        if (!res.ok) return false;
+        await refreshSources();
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [authenticatedFetch, refreshSources]
+  );
+
   return (
     <AppStateContext.Provider
       value={{
@@ -570,6 +805,9 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
         addSource,
         removeSource,
         setSourceProfile,
+        refreshSources,
+        muteSource,
+        unmuteSource,
         setArticles,
         patchArticleSummary,
         saveBookmark,

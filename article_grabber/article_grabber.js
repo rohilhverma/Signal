@@ -170,13 +170,18 @@ async function guidChecker(guid){
 
 // Upsert one article. Only the summary column for THIS mode is ever written —
 // the other two slots are left untouched so a user-requested resummarization
-// is never wiped by a later scrape.
-async function newArticle(item, summary, mode){
+// is never wiped by a later scrape. `topics` is not mode-specific, so unlike
+// the summary columns it is unconditionally overwritten on every upsert, same
+// as title/article_text/word_count/etc.
+async function newArticle(item, summary, mode, topics){
     const column = summaryColumn(mode)
+    // toTopics() in summarizer.js always returns an array (possibly empty),
+    // but stay defensive here in case a caller ever passes undefined directly.
+    const topicsStr = Array.isArray(topics) ? topics.join(',') : ''
     const sql = `
         INSERT INTO articles
-            (website_url, link, title, ${column}, article_text, word_count, published_at, processed_at, paywall)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            (website_url, link, title, ${column}, article_text, word_count, published_at, processed_at, paywall, topics)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         ON CONFLICT ON CONSTRAINT uk_articles_site_link DO UPDATE SET
             title = EXCLUDED.title,
             ${column} = EXCLUDED.${column},
@@ -184,7 +189,8 @@ async function newArticle(item, summary, mode){
             word_count = EXCLUDED.word_count,
             published_at = EXCLUDED.published_at,
             processed_at = EXCLUDED.processed_at,
-            paywall = EXCLUDED.paywall`
+            paywall = EXCLUDED.paywall,
+            topics = EXCLUDED.topics`
     return pool.query(sql, [
         item.websiteName,
         item.link,
@@ -194,7 +200,8 @@ async function newArticle(item, summary, mode){
         item.articleText.trim().split(/\s+/).length,
         item.publishedAt,
         new Date(),
-        item.paywall
+        item.paywall,
+        topicsStr
     ])
 }
 
@@ -401,7 +408,7 @@ export async function initialScraper(url, mode = "default") {
             if (summarization[j]) {
                 try {
                     await dbGUID(chunk[j].guid_)
-                    await newArticle(chunk[j], summarization[j].summary, mode)
+                    await newArticle(chunk[j], summarization[j].summary, mode, summarization[j].topics)
                     newCount+=1
                     console.log(`  [${j}] Saved article with summary: ${chunk[j].title_}`)
                 } catch (saveErr) {
@@ -506,7 +513,7 @@ async function linkBuilder(url) {
             if (err.response && (err.response.status === 429 || err.response.status === 403 || err.response.status === 503)) {
                 console.log(`Failed ${testURL}`)
                 feedData = await javascriptBypasser(testURL)
-                if (!feedData){ console.log("Fucking failed"); continue }
+                if (!feedData){ console.log(`Feed fetch failed for ${testURL}`); continue }
             } else {
                 continue
             }

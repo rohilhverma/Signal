@@ -22,15 +22,6 @@ function formatHoursAgo(date: Date): string {
   return `${hours}h ago`;
 }
 
-function estimateReadTime(wordCount: number): string {
-  const minutes = Math.max(1, Math.round(wordCount / 200));
-  return `${minutes} min read`;
-}
-
-function formatNumber(n: number): string {
-  return n.toLocaleString();
-}
-
 function splitShortSummary(summary: string): string[] {
   return summary
     .replace(/\r\n?/g, "\n")
@@ -285,25 +276,6 @@ function SavedCard({
             {/* Meta row */}
             <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5, flexWrap: "wrap" }}>
               <span style={{ fontSize: 11, color: accent, fontWeight: 600 }}>{source.name}</span>
-              <span style={{ fontSize: 11, color: "var(--sg-border)" }}>·</span>
-              <span style={{ fontSize: 11, color: "var(--sg-muted)" }}>
-                {formatHoursAgo(article.publishedAt)}
-              </span>
-              <span style={{ fontSize: 11, color: "var(--sg-border)" }}>·</span>
-              <span style={{ fontSize: 11, color: "var(--sg-muted)" }}>
-                {estimateReadTime(article.originalWordCount)}
-              </span>
-              <span style={{ fontSize: 11, color: "var(--sg-border)" }}>·</span>
-              <span
-                style={{
-                  fontSize: 10.5,
-                  color: "var(--sg-muted)",
-                  opacity: 0.8,
-                  fontFamily: "var(--font-jetbrains-mono, monospace)",
-                }}
-              >
-                {formatNumber(article.originalWordCount)} → {formatNumber(article.summaryWordCount)} words
-              </span>
             </div>
 
             {/* Title */}

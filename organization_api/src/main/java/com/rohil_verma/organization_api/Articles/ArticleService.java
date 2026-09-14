@@ -54,13 +54,14 @@ public class ArticleService {
     .expireAfterWrite(30, TimeUnit.SECONDS)
     .build();
 
-    private static final int FRESHNESS_HOURS = 24;
+    /** Public so the sources screen counts over the same window the dashboard reads. */
+    public static final int FRESHNESS_HOURS = 24;
 
     public Map<String, WebsiteContent> getUserContent(String username){
         Map<String, WebsiteContent> cached = userContentCache.getIfPresent(username);
         if (cached != null) return cached;
 
-        List<String> userWebsites = userService.getWebsitesForUser(username);
+        List<String> userWebsites = userService.getVisibleWebsitesForUser(username);
 
         Map<String, WebsiteContent> returnMap = new HashMap<>();
         if (userWebsites.isEmpty()) {
@@ -108,6 +109,31 @@ public class ArticleService {
 
     public ConcurrentMap<String, @NonNull String> cacheContent(){
         return articleTextCache.asMap();
+    }
+
+    /**
+     * Drops a user's cached dashboard. Called when the set of sources they can see changes -
+     * without it a mute would appear to do nothing for up to the cache's 30 second TTL, which
+     * reads as a broken button rather than a slow one.
+     */
+    public void invalidateUserContent(String username){
+        userContentCache.invalidate(username);
+    }
+
+    /**
+     * Search over whatever the 7-day retention window still holds, scoped to the sites
+     * the user actually subscribes to - the same scoping {@link #getUserContent} applies
+     * to the dashboard read, so a search result is never something outside what the user
+     * would otherwise see in their feed.
+     */
+    public List<ArticleFeedView> searchUserArticles(String username, String term) {
+        String trimmed = term == null ? "" : term.trim();
+        if (trimmed.length() < 2) return List.of();
+
+        List<String> userWebsites = userService.getVisibleWebsitesForUser(username);
+        if (userWebsites.isEmpty()) return List.of();
+
+        return articleRepository.searchByWebsiteURLs(userWebsites, trimmed);
     }
 
     @Async

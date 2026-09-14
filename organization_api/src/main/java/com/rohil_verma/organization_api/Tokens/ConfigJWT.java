@@ -62,6 +62,10 @@ public class ConfigJWT {
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers("/auth/**").permitAll()
+                // Called by the launchd agent, which carries no cookie. Guarded by the
+                // X-Admin-Token shared secret inside AdminJobController instead: single-user
+                // mode authenticates every request, so the chain cannot be the gate here.
+                .requestMatchers("/admin/**").permitAll()
                 .anyRequest().authenticated()
             )
             .exceptionHandling(ex -> ex.authenticationEntryPoint(unauthorizedEntryPoint()))

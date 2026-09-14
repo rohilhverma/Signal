@@ -15,6 +15,7 @@ import {
   ChevronRight,
   Loader2,
   Tags,
+  Sparkles,
 } from "lucide-react";
 import {
   type Source,
@@ -24,7 +25,11 @@ import {
 } from "../data/mockArticles";
 import { useAuth } from "../context/AuthContext";
 import { usePreferences } from "../context/PreferencesContext";
-import { useAppState, type ManagedSource } from "../context/AppStateContext";
+import { computeHotTopics, HotTopicsView } from "../hot-topics";
+import { extractSummaryText } from "../lib/summaryText";
+import { SearchPage } from "./SearchPage";
+import { StatsPage } from "./StatsPage";
+import { useAppState, createFallbackManagedSource, type ManagedSource } from "../context/AppStateContext";
 import { useToast } from "../context/ToastContext";
 
 // ─── Utilities ──────────────────────────────────────────────────────────────
@@ -35,15 +40,6 @@ function formatHoursAgo(date: Date): string {
   const minutes = Math.floor(diffMs / (1000 * 60));
   if (minutes < 60) return `${minutes}m ago`;
   return `${hours}h ago`;
-}
-
-function estimateReadTime(wordCount: number): string {
-  const minutes = Math.max(1, Math.round(wordCount / 200));
-  return `${minutes} min read`;
-}
-
-function formatNumber(n: number): string {
-  return n.toLocaleString();
 }
 
 function parsePreferredTime(value: string): { hours: number; minutes: number } {
@@ -166,32 +162,6 @@ function getKeywordVariants(keyword: string): string[] {
   );
 }
 
-function createFallbackManagedSource(sourceId: string): ManagedSource {
-  try {
-    const url = new URL(sourceId);
-    const hostname = url.hostname.replace(/^www\./, "");
-    return {
-      id: sourceId,
-      name: hostname.split(".")[0].replace(/^\w/, (char) => char.toUpperCase()),
-      domain: hostname,
-      faviconUrl: `https://www.google.com/s2/favicons?sz=64&domain=${hostname}`,
-      accentColor: DEFAULT_ACCENT,
-      contentProfile: "standard",
-      articleCount: 0,
-    };
-  } catch {
-    return {
-      id: sourceId,
-      name: sourceId,
-      domain: sourceId,
-      faviconUrl: "",
-      accentColor: DEFAULT_ACCENT,
-      contentProfile: "standard",
-      articleCount: 0,
-    };
-  }
-}
-
 function scoreArticleForKeyword(article: Article, keyword: string): KeywordArticleMatch | null {
   const variants = getKeywordVariants(keyword);
   let score = 0;
@@ -266,83 +236,6 @@ function getVisibleKeywordArticleMatches(
 // Returns null (instead of the raw JSON) when the string looks like JSON but
 // can't be properly extracted — this prevents raw-JSON display and allows
 // handleSummaryModeChange to re-fetch rather than treating it as preloaded.
-function normalizeSummaryValue(value: unknown): string | null {
-  if (typeof value === "string") {
-    return value.trim() || null;
-  }
-
-  if (Array.isArray(value)) {
-    const lines = value
-      .map((item) => (typeof item === "string" ? item.trim() : ""))
-      .filter(Boolean);
-    return lines.length > 0 ? lines.join("\n") : null;
-  }
-
-  return null;
-}
-
-function extractSummaryText(raw: string | null | undefined): string | null {
-  if (!raw) return null;
-  const trimmed = raw
-    .trim()
-    .replace(/^```(?:json)?\s*/i, "")
-    .replace(/\s*```$/, "")
-    .trim();
-  if (!trimmed) return null;
-
-  if (/^(Gemini error:|Cache miss:)/i.test(trimmed)) {
-    return null;
-  }
-
-  // JSON string wrapper: "\"[{\\\"summary\\\":\\\"...\\\"}]\""
-  if (
-    (trimmed.startsWith("\"") && trimmed.endsWith("\"")) ||
-    (trimmed.startsWith("'") && trimmed.endsWith("'"))
-  ) {
-    try {
-      const unwrapped = JSON.parse(trimmed) as string;
-      if (typeof unwrapped === "string" && unwrapped !== trimmed) {
-        return extractSummaryText(unwrapped);
-      }
-    } catch {}
-  }
-
-  // JSON array: [{"title":"...","summary":"..."}]
-  if (trimmed.startsWith("[")) {
-    try {
-      const parsed = JSON.parse(trimmed) as Array<{ summary?: unknown }>;
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        return normalizeSummaryValue(parsed[0]?.summary);
-      }
-    } catch {}
-  }
-
-  // JSON object (Gemini sometimes returns an object instead of an array):
-  // {"title":"...","summary":"..."} or {"summary":"..."}
-  if (trimmed.startsWith("{")) {
-    try {
-      const parsed = JSON.parse(trimmed) as { summary?: unknown };
-      return normalizeSummaryValue(parsed?.summary);
-    } catch {}
-  }
-
-  // Fallback for Gemini's malformed JSON-ish responses, e.g.
-  // [{title:'...',summary:'...'}] or {"summary":"..."} with escaping issues.
-  const summaryFieldMatch = trimmed.match(
-    /["']summary["']\s*:\s*(?:"((?:\\.|[^"])*)"|'((?:\\.|[^'])*)')/s
-  );
-  const summaryField = summaryFieldMatch?.[1] ?? summaryFieldMatch?.[2];
-  if (summaryField) {
-    return summaryField
-      .replace(/\\n/g, "\n")
-      .replace(/\\"/g, "\"")
-      .replace(/\\'/g, "'")
-      .trim() || null;
-  }
-
-  // Plain text — return as-is
-  return trimmed || null;
-}
 
 function splitShortSummary(summary: string): string[] {
   return summary
@@ -685,6 +578,7 @@ interface ArticleCardProps {
   loadingModes: Set<SummaryMode>;
   sourceCollapsed: boolean;
   matchLabel?: string | null;
+  explainChip?: { text: string; wildcard: boolean } | null;
   onTrackLinkClick: () => void;
 }
 
@@ -702,6 +596,7 @@ function ArticleCard({
   loadingModes,
   sourceCollapsed,
   matchLabel,
+  explainChip,
   onTrackLinkClick,
 }: ArticleCardProps) {
   const isRead = ageState === "read";
@@ -749,25 +644,6 @@ function ArticleCard({
           <div style={{ flex: 1, minWidth: 0 }}>
             {/* Meta row */}
             <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 5, flexWrap: "wrap" }}>
-              <span style={{ fontSize: 11, color: "var(--sg-muted)", opacity: textOpacity, transition: "opacity 0.25s ease" }}>
-                {formatHoursAgo(article.publishedAt)}
-              </span>
-              <span style={{ fontSize: 11, color: "var(--sg-border)" }}>·</span>
-              <span style={{ fontSize: 11, color: "var(--sg-muted)", opacity: textOpacity, transition: "opacity 0.25s ease" }}>
-                {estimateReadTime(article.originalWordCount)}
-              </span>
-              <span style={{ fontSize: 11, color: "var(--sg-border)" }}>·</span>
-              <span
-                style={{
-                  fontSize: 10.5,
-                  color: "var(--sg-muted)",
-                  opacity: textOpacity * 0.85,
-                  fontFamily: "var(--font-jetbrains-mono, monospace)",
-                  transition: "opacity 0.25s ease",
-                }}
-              >
-                {formatNumber(article.originalWordCount)} → {formatNumber(article.summaryWordCount)} words
-              </span>
               {isNew && !isRead && (
                 <span
                   style={{
@@ -957,6 +833,47 @@ function ArticleCard({
             >
               Matched: {matchLabel}
             </span>
+          </div>
+        )}
+
+        {explainChip && (
+          <div style={{ paddingLeft: 36, marginTop: 8, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+            <span
+              title="Why you're seeing this"
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 5,
+                fontSize: 10.5,
+                fontWeight: 600,
+                color: "var(--sg-muted)",
+                backgroundColor: "var(--sg-nav-active)",
+                border: "1px solid var(--sg-border)",
+                borderRadius: 999,
+                padding: "4px 8px",
+              }}
+            >
+              <Sparkles style={{ width: 10, height: 10, opacity: 0.7, flexShrink: 0 }} />
+              {explainChip.text}
+            </span>
+            {explainChip.wildcard && (
+              <span
+                title="A deliberately low-affinity pick, included for variety"
+                style={{
+                  fontSize: 9.5,
+                  fontWeight: 700,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.06em",
+                  color: accent,
+                  backgroundColor: `${accent}14`,
+                  border: `1px solid ${accent}40`,
+                  borderRadius: 999,
+                  padding: "4px 8px",
+                }}
+              >
+                Wildcard
+              </span>
+            )}
           </div>
         )}
 
@@ -1254,10 +1171,6 @@ function ReaderView({
             <FaviconBubble src={source.faviconUrl} alt={source.name} size={22} accentColor={accent} />
           )}
           <span style={{ fontSize: 12, fontWeight: 700, color: accent }}>{source?.name}</span>
-          <span style={{ fontSize: 11, color: "var(--sg-border)" }}>·</span>
-          <span style={{ fontSize: 11, color: "var(--sg-muted)" }}>{formatHoursAgo(article.publishedAt)}</span>
-          <span style={{ fontSize: 11, color: "var(--sg-border)" }}>·</span>
-          <span style={{ fontSize: 11, color: "var(--sg-muted)" }}>{estimateReadTime(article.originalWordCount)}</span>
           {isNew && !isRead && (
             <span
               style={{
@@ -1489,288 +1402,12 @@ function ReaderView({
 
 // ─── Hot Topics ──────────────────────────────────────────────────────────────
 
-const HOT_TOPICS_STOPWORDS = new Set([
-  "the","a","an","and","or","but","in","on","at","to","for","of","with","by",
-  "from","is","are","was","were","be","been","being","have","has","had","do",
-  "does","did","will","would","could","should","may","might","can","its","it",
-  "this","that","these","those","as","up","out","so","if","not","no","nor",
-  "yet","both","either","neither","each","few","more","most","other","some",
-  "such","than","too","very","just","how","when","where","who","which","what",
-  "why","all","any","after","about","into","through","during","before","while",
-  "their","there","they","them","then","say","says","said","also","now","over",
-  "under","between","our","we","us","he","she","his","her","him","my","your",
-  "one","two","first","last","next","like","get","make","take","use","see",
-  "know","come","go","want","look","think","give","back","still","well","way",
-  "even","much","need","set","put","end","week","year","day","time","per","via",
-  "company","companies","technology","tech","system","systems","product","products",
-  "service","services","business","businesses","market","markets","user","users",
-  "app","apps","platform","platforms","team","teams","work","using","based","made",
-  "called","including","percent","million","billion","people","thing","things",
-  "part","long","high","low","large","small","big","old","report","reports",
-  "according","following","despite","amid","since","though","although","however",
-  "because","within","without","around","among","against","data","number","numbers",
-]);
-
-type HotTopic = {
-  term: string;
-  sourceIds: string[];
-  totalMentions: number;
-  articlesBySource: Map<string, Article[]>;
-};
-
-function computeHotTopics(articles: Article[], sources: Source[]): HotTopic[] {
-  const sourceOrder = new Map(sources.map((s, i) => [s.id, i]));
-
-  const index = new Map<string, {
-    forms: Map<string, number>;
-    sourceArticles: Map<string, Set<string>>;
-    articleIndex: Map<string, Article>;
-    totalMentions: number;
-  }>();
-
-  for (const article of articles) {
-    const text = `${article.title} ${article.summaryDefault}`;
-    const tokens = (text.match(/\b[A-Za-z][A-Za-z]{2,}\b/g) ?? [])
-      .filter(t => !HOT_TOPICS_STOPWORDS.has(t.toLowerCase()));
-
-    for (const token of tokens) {
-      const key = token.toLowerCase();
-      const entry = index.get(key);
-      if (!entry) {
-        index.set(key, {
-          forms: new Map([[token, 1]]),
-          sourceArticles: new Map([[article.sourceId, new Set([article.id])]]),
-          articleIndex: new Map([[article.id, article]]),
-          totalMentions: 1,
-        });
-      } else {
-        entry.forms.set(token, (entry.forms.get(token) ?? 0) + 1);
-        entry.totalMentions += 1;
-        entry.articleIndex.set(article.id, article);
-        if (!entry.sourceArticles.has(article.sourceId)) {
-          entry.sourceArticles.set(article.sourceId, new Set([article.id]));
-        } else {
-          entry.sourceArticles.get(article.sourceId)!.add(article.id);
-        }
-      }
-    }
-  }
-
-  return Array.from(index.values())
-    .filter(e => e.sourceArticles.size >= 2)
-    .map(entry => {
-      let bestForm = "";
-      let bestScore = -1;
-      for (const [form, count] of entry.forms) {
-        const score = count * (form !== form.toLowerCase() ? 1.5 : 1);
-        if (score > bestScore) { bestScore = score; bestForm = form; }
-      }
-      const sourceIds = Array.from(entry.sourceArticles.keys())
-        .sort((a, b) => (sourceOrder.get(a) ?? 999) - (sourceOrder.get(b) ?? 999));
-      const articlesBySource = new Map<string, Article[]>();
-      for (const [srcId, ids] of entry.sourceArticles) {
-        articlesBySource.set(
-          srcId,
-          Array.from(ids).map(id => entry.articleIndex.get(id)!).filter(Boolean),
-        );
-      }
-      return { term: bestForm, sourceIds, totalMentions: entry.totalMentions, articlesBySource };
-    })
-    .sort((a, b) =>
-      b.sourceIds.length !== a.sourceIds.length
-        ? b.sourceIds.length - a.sourceIds.length
-        : b.totalMentions - a.totalMentions
-    )
-    .slice(0, 15);
-}
-
-function HotTopicsView({
-  topics,
-  sources,
-  expandedIds,
-  onToggleExpand,
-  bookmarkedIds,
-  onToggleBookmark,
-  seenIds,
-  newSinceLastVisit,
-  summaryModes,
-  onSummaryModeChange,
-  loadingModesByArticle,
-  onTrackLinkClick,
-  stats,
-}: {
-  topics: HotTopic[];
-  sources: Source[];
-  expandedIds: Set<string>;
-  onToggleExpand: (id: string) => void;
-  bookmarkedIds: Set<string>;
-  onToggleBookmark: (id: string) => void;
-  seenIds: Set<string>;
-  newSinceLastVisit: Set<string>;
-  summaryModes: Map<string, SummaryMode>;
-  onSummaryModeChange: (articleId: string, mode: SummaryMode) => void;
-  loadingModesByArticle: Map<string, Set<SummaryMode>>;
-  onTrackLinkClick: (articleId: string) => void;
-  stats: { articleCount: number; sourceCount: number };
-}) {
-  const [expandedTopics, setExpandedTopics] = useState<Set<string>>(new Set());
-  const sourceMap = useMemo(() => new Map(sources.map(s => [s.id, s])), [sources]);
-
-  function toggleTopic(term: string) {
-    setExpandedTopics(prev => {
-      const next = new Set(prev);
-      next.has(term) ? next.delete(term) : next.add(term);
-      return next;
-    });
-  }
-
-  if (topics.length === 0) {
-    return (
-      <div style={{ padding: "48px 0", textAlign: "center", color: "var(--sg-muted)", fontSize: 13.5, lineHeight: 1.6 }}>
-        Not enough cross-source coverage yet. Add more sources or check back after a feed update.
-      </div>
-    );
-  }
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column" }}>
-      <div style={{
-        fontSize: 10,
-        fontWeight: 700,
-        letterSpacing: "0.11em",
-        textTransform: "uppercase" as const,
-        color: "var(--sg-muted)",
-        marginBottom: 20,
-        opacity: 0.7,
-      }}>
-        Topics trending across multiple sources right now
-      </div>
-
-      <div style={{ display: "flex", flexDirection: "column" }}>
-        {topics.map((topic, rank) => {
-          const t = topics.length <= 1 ? 0 : rank / (topics.length - 1);
-          const fontSize = Math.round(28 - t * 14);
-          const fontWeight = Math.max(400, Math.round((700 - t * 300) / 100) * 100);
-          const isOpen = expandedTopics.has(topic.term);
-
-          const expandedArticles: Article[] = [];
-          const seen = new Set<string>();
-          for (const srcId of topic.sourceIds) {
-            for (const a of topic.articlesBySource.get(srcId) ?? []) {
-              if (!seen.has(a.id)) { seen.add(a.id); expandedArticles.push(a); }
-            }
-          }
-
-          return (
-            <div key={topic.term}>
-              <div
-                role="button"
-                tabIndex={0}
-                onClick={() => toggleTopic(topic.term)}
-                onKeyDown={e => (e.key === "Enter" || e.key === " ") && toggleTopic(topic.term)}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 12,
-                  padding: "11px 10px",
-                  borderRadius: 7,
-                  cursor: "pointer",
-                  backgroundColor: "transparent",
-                  transition: "background-color 0.15s ease",
-                  userSelect: "none" as const,
-                  outline: "none",
-                }}
-                onMouseEnter={e => (e.currentTarget.style.backgroundColor = "var(--sg-surface-hover)")}
-                onMouseLeave={e => (e.currentTarget.style.backgroundColor = "transparent")}
-              >
-                <span style={{
-                  fontSize,
-                  fontWeight,
-                  color: "var(--sg-text)",
-                  lineHeight: 1.2,
-                  letterSpacing: fontSize > 20 ? "-0.4px" : "-0.1px",
-                  flex: 1,
-                }}>
-                  {topic.term}
-                </span>
-
-                <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-                  <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                    {topic.sourceIds.map(srcId => (
-                      <div
-                        key={srcId}
-                        title={sourceMap.get(srcId)?.name ?? srcId}
-                        style={{
-                          width: 9,
-                          height: 9,
-                          borderRadius: "50%",
-                          backgroundColor: sourceMap.get(srcId)?.accentColor ?? DEFAULT_ACCENT,
-                          flexShrink: 0,
-                        }}
-                      />
-                    ))}
-                  </div>
-                  <span style={{ fontSize: 11.5, color: "var(--sg-muted)", whiteSpace: "nowrap" as const }}>
-                    across {topic.sourceIds.length} sources
-                  </span>
-                  <ChevronRight
-                    style={{
-                      width: 13,
-                      height: 13,
-                      color: "var(--sg-muted)",
-                      transform: isOpen ? "rotate(90deg)" : "rotate(0deg)",
-                      transition: "transform 0.2s ease",
-                      flexShrink: 0,
-                    }}
-                  />
-                </div>
-              </div>
-
-              {isOpen && (
-                <div style={{ padding: "4px 0 16px 10px", display: "flex", flexDirection: "column", gap: 8 }}>
-                  {expandedArticles.map(article => {
-                    const source = sourceMap.get(article.sourceId);
-                    if (!source) return null;
-                    return (
-                      <ArticleCard
-                        key={article.id}
-                        article={article}
-                        source={source}
-                        ageState={getAgeState(article, seenIds)}
-                        expanded={expandedIds.has(article.id)}
-                        onToggleExpand={() => onToggleExpand(article.id)}
-                        bookmarked={bookmarkedIds.has(article.id)}
-                        onToggleBookmark={() => onToggleBookmark(article.id)}
-                        isNew={newSinceLastVisit.has(article.id)}
-                        summaryMode={summaryModes.get(article.id) ?? "default"}
-                        onSummaryModeChange={mode => onSummaryModeChange(article.id, mode)}
-                        loadingModes={loadingModesByArticle.get(article.id) ?? new Set()}
-                        sourceCollapsed={false}
-                        matchLabel={topic.term}
-                        onTrackLinkClick={() => onTrackLinkClick(article.id)}
-                      />
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      <div style={{ marginTop: 32, fontSize: 12, color: "var(--sg-muted)", opacity: 0.8 }}>
-        {stats.sourceCount} sources · {stats.articleCount} articles
-      </div>
-    </div>
-  );
-}
-
 // ─── Dashboard Page ───────────────────────────────────────────────────────────
 
 // Per-article summary content (mutable in state)
 type ArticleSummaryCache = Map<string, Partial<Record<SummaryMode, string>>>;
 
-type DashboardMode = "default" | "keyword" | "hotTopics";
+type DashboardMode = "default" | "keyword" | "hotTopics" | "forYou" | "stats" | "search";
 
 type DashboardArticleFields = {
   date: string;
@@ -1808,17 +1445,90 @@ type FeedUpdateStatus =
   | { kind: "progress"; label: string; title: string }
   | { kind: "status"; label: string; title: string };
 
+// ─── For You ────────────────────────────────────────────────────────────────
+// Response contract for GET /api/user/feed/foryou — a server-ranked, 7-day
+// window feed. Ranking order from the server is meaningful and must not be
+// re-sorted client-side.
+
+type ForYouExplain = {
+  termAffinity: number;
+  sourceAffinity: number;
+  keywordBoost: number;
+  recency: number;
+  diversityPenalty: number;
+  seenPenalty: number;
+  serendipity: boolean;
+  topTerms: string[];
+};
+
+type ForYouArticleFields = {
+  link: string;
+  websiteURL: string;
+  title: string;
+  summaryShort: string | null;
+  summaryDefault: string | null;
+  summaryLong: string | null;
+  publishedAt: string;
+  processedAt: string;
+  wordCount: number;
+  topics: string[];
+  score: number;
+  explain: ForYouExplain;
+};
+
+type ForYouFeedResponse = {
+  generatedAt: string;
+  enabled: boolean;
+  articles: ForYouArticleFields[];
+};
+
+function toTitleCase(value: string): string {
+  return value.replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+// Builds the compact "why you're seeing this" chip text — leads with the top
+// matched term (from explain.topTerms), then fills remaining slots with the
+// highest-magnitude scoring components so the chip stays legible instead of
+// dumping the raw explain payload.
+function buildForYouExplainChipText(explain: ForYouExplain, sourceName: string): string {
+  const tokens: string[] = [];
+
+  if (explain.topTerms.length > 0) {
+    tokens.push(toTitleCase(explain.topTerms[0]));
+  }
+
+  const components: Array<{ label: string; weight: number }> = [
+    { label: sourceName, weight: explain.sourceAffinity },
+    { label: "matches your keywords", weight: explain.keywordBoost },
+    { label: "fresh", weight: explain.recency },
+    { label: "diversity trim", weight: Math.abs(explain.diversityPenalty) },
+    { label: "previously seen", weight: Math.abs(explain.seenPenalty) },
+  ].filter((component) => component.weight > 0.05);
+
+  components.sort((a, b) => b.weight - a.weight);
+
+  const remainingSlots = Math.max(0, 3 - tokens.length);
+  for (const component of components.slice(0, remainingSlots)) {
+    tokens.push(component.label);
+  }
+
+  return tokens.length > 0 ? tokens.join(" · ") : "Recommended for you";
+}
+
 const DASHBOARD_MODES: { key: DashboardMode; label: string }[] = [
   { key: "default", label: "Default" },
   { key: "keyword", label: "Keyword" },
   { key: "hotTopics", label: "Hot Topics" },
+  { key: "forYou", label: "For You" },
+  { key: "stats", label: "Stats" },
+  { key: "search", label: "Search" },
 ];
 
 const FEED_UPDATE_TIMEOUT_MS = 5 * 60 * 1000;
 
 export function DashboardPage() {
   const navigate = useNavigate();
-  const { density, viewMode, preferredUpdateTime } = usePreferences();
+  const { density, viewMode, preferredUpdateTime, theme } = usePreferences();
   const { authenticatedFetch, user } = useAuth();
   const { state: appState, saveBookmark, removeBookmark, isBookmarked, addSource, setArticles, patchArticleSummary: patchArticle, trackArticleInteraction } = useAppState();
   const { showToast } = useToast();
@@ -1851,6 +1561,110 @@ export function DashboardPage() {
   const [selectedKeyword, setSelectedKeyword] = useState<string | null>(null);
   const [dashboardMode, setDashboardMode] = useState<DashboardMode>("default");
   const [feedPollState, setFeedPollState] = useState<FeedPollState | null>(null);
+
+  // For You — server-ranked feed, kept separate from the main `articles`
+  // state so it never inherits the other modes' 24h freshness filtering.
+  const [forYouArticles, setForYouArticles] = useState<Article[]>([]);
+  const [forYouExplainByArticle, setForYouExplainByArticle] = useState<Map<string, ForYouExplain>>(new Map());
+  const [forYouEnabled, setForYouEnabled] = useState<boolean | null>(null);
+  const [forYouLoading, setForYouLoading] = useState(false);
+  const [forYouFetchFailed, setForYouFetchFailed] = useState(false);
+  const hasFetchedForYouRef = useRef(false);
+
+  useEffect(() => {
+    if (dashboardMode !== "forYou" || hasFetchedForYouRef.current) return;
+    hasFetchedForYouRef.current = true;
+
+    let cancelled = false;
+
+    async function loadForYou() {
+      setForYouLoading(true);
+      setForYouFetchFailed(false);
+      try {
+        const res = await authenticatedFetch("/api/user/feed/foryou");
+        if (!res.ok) {
+          // Endpoint not deployed yet (404) or another server error — treat
+          // as gracefully unavailable rather than a crash or error banner.
+          if (!cancelled) {
+            setForYouFetchFailed(true);
+            setForYouEnabled(null);
+          }
+          return;
+        }
+
+        const payload = (await res.json()) as ForYouFeedResponse;
+        if (cancelled) return;
+
+        setForYouEnabled(payload.enabled);
+
+        const nextArticles: Article[] = [];
+        const nextExplain = new Map<string, ForYouExplain>();
+
+        for (const item of Array.isArray(payload.articles) ? payload.articles : []) {
+          const summaryDefault = extractSummaryText(item.summaryDefault) ?? "";
+          const article: Article = {
+            id: item.link,
+            // Bare domain, matching the app-wide sourceId convention everywhere else
+            // (Default/Keyword/HotTopics derive it the same way from /user/website) —
+            // both the lookup against `sources` below and the resummarize request body
+            // (which reuses article.sourceId as `websiteURL`) depend on this matching
+            // exactly what the backend stores in articles.website_url.
+            sourceId: item.websiteURL,
+            title: item.title,
+            url: item.link,
+            summaryShort: extractSummaryText(item.summaryShort),
+            summaryDefault,
+            summaryDeepDive: extractSummaryText(item.summaryLong),
+            publishedAt: new Date(item.publishedAt),
+            processedAt: new Date(item.processedAt),
+            originalWordCount: item.wordCount,
+            summaryWordCount: summaryDefault.split(/\s+/).filter(Boolean).length,
+          };
+          nextArticles.push(article);
+          nextExplain.set(article.id, item.explain);
+        }
+
+        // Ranked order from the server is the point — preserve it as-is.
+        setForYouArticles(nextArticles);
+        setForYouExplainByArticle(nextExplain);
+      } catch (error) {
+        console.error("Failed to load For You feed:", error);
+        if (!cancelled) {
+          setForYouFetchFailed(true);
+          setForYouEnabled(null);
+        }
+      } finally {
+        if (!cancelled) setForYouLoading(false);
+      }
+    }
+
+    void loadForYou();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authenticatedFetch, dashboardMode]);
+
+  const forYouSourcesById = useMemo(() => {
+    const map = new Map<string, ManagedSource>();
+    for (const article of forYouArticles) {
+      if (map.has(article.sourceId)) continue;
+      const existing = sources.find((candidate) => candidate.id === article.sourceId);
+      map.set(article.sourceId, existing ?? createFallbackManagedSource(article.sourceId));
+    }
+    return map;
+  }, [forYouArticles, sources]);
+
+  const patchForYouArticleSummary = useCallback((articleId: string, mode: SummaryMode, text: string) => {
+    setForYouArticles((prev) =>
+      prev.map((article) => {
+        if (article.id !== articleId) return article;
+        if (mode === "short") return { ...article, summaryShort: text };
+        if (mode === "deepDive") return { ...article, summaryDeepDive: text };
+        return { ...article, summaryDefault: text };
+      })
+    );
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -1910,7 +1724,10 @@ export function DashboardPage() {
         let faviconUrl = existingSource?.faviconUrl ?? `https://www.google.com/s2/favicons?sz=64&domain=${hostname}`;
         let accentColor = existingSource?.accentColor ?? DEFAULT_ACCENT;
 
-        if (!existingSource) {
+        // Not merely "is this source new": HYDRATE_SOURCES seeds every subscribed source with
+        // the placeholder accent before this runs, so gating on existence alone means the
+        // sampled colour is never fetched and every site renders grey.
+        if (!existingSource || existingSource.accentColor === DEFAULT_ACCENT) {
           try {
             const fav = await fetch(`/api/favicon?domain=${hostname}`).then((r) => r.json()) as { faviconUrl: string; color: string };
             faviconUrl = fav.faviconUrl;
@@ -2042,7 +1859,8 @@ export function DashboardPage() {
       const previousMode = summaryModes.get(articleId) ?? "default";
       setSummaryModes((prev) => new Map(prev).set(articleId, mode));
 
-      const currentArticle = articles.find((article) => article.id === articleId);
+      const isForYouArticle = dashboardMode === "forYou";
+      const currentArticle = (isForYouArticle ? forYouArticles : articles).find((article) => article.id === articleId);
       if (currentArticle && mode === "deepDive" && previousMode !== "deepDive") {
         trackArticleInteraction(currentArticle, "deep_dive_click");
       }
@@ -2104,7 +1922,11 @@ export function DashboardPage() {
             return next;
           });
 
-          patchArticle(articleId, mode, generatedText);
+          if (isForYouArticle) {
+            patchForYouArticleSummary(articleId, mode, generatedText);
+          } else {
+            patchArticle(articleId, mode, generatedText);
+          }
         }
       } catch (err) {
         console.error("Resummarize error:", err);
@@ -2119,7 +1941,7 @@ export function DashboardPage() {
         });
       }
     },
-    [authenticatedFetch, summaryCache, loadingModesByArticle, articles, patchArticle, showToast, trackArticleInteraction]
+    [authenticatedFetch, summaryCache, loadingModesByArticle, articles, forYouArticles, dashboardMode, patchArticle, patchForYouArticleSummary, showToast, trackArticleInteraction]
   );
 
   // Computed stats
@@ -2197,7 +2019,8 @@ export function DashboardPage() {
   );
 
   function toggleExpand(id: string) {
-    const article = articles.find((entry) => entry.id === id);
+    const articlePool = dashboardMode === "forYou" ? forYouArticles : articles;
+    const article = articlePool.find((entry) => entry.id === id);
     const isOpening = !expandedIds.has(id);
     if (article && isOpening) {
       trackArticleInteraction(article, "article_click");
@@ -2211,8 +2034,11 @@ export function DashboardPage() {
   }
 
   async function toggleBookmark(id: string) {
-    const article = articles.find((a) => a.id === id);
-    const source = sources.find((s) => s.id === article?.sourceId);
+    const isForYouArticle = dashboardMode === "forYou";
+    const article = (isForYouArticle ? forYouArticles : articles).find((a) => a.id === id);
+    const source = isForYouArticle
+      ? forYouSourcesById.get(article?.sourceId ?? "")
+      : sources.find((s) => s.id === article?.sourceId);
     if (!article || !source) return;
     trackArticleInteraction(article, "bookmark_click");
     const alreadyBookmarked = isBookmarked(id);
@@ -2235,20 +2061,22 @@ export function DashboardPage() {
 
   const handleLinkClick = useCallback(
     (articleId: string) => {
-      const article = articles.find((entry) => entry.id === articleId);
+      const articlePool = dashboardMode === "forYou" ? forYouArticles : articles;
+      const article = articlePool.find((entry) => entry.id === articleId);
       if (article) {
         trackArticleInteraction(article, "link_click");
       }
     },
-    [articles, trackArticleInteraction]
+    [articles, forYouArticles, dashboardMode, trackArticleInteraction]
   );
 
   function handleExpandAll() {
+    const idsToExpand = dashboardMode === "forYou" ? forYouArticles.map((a) => a.id) : filteredArticles.map((a) => a.id);
     if (allExpanded) {
       setExpandedIds(new Set());
       setAllExpanded(false);
     } else {
-      setExpandedIds(new Set(filteredArticles.map((a) => a.id)));
+      setExpandedIds(new Set(idsToExpand));
       setAllExpanded(true);
     }
   }
@@ -2788,13 +2616,25 @@ export function DashboardPage() {
             <span style={{ fontSize: 13, fontWeight: 500, color: "var(--sg-text)" }}>
               {loading
                 ? "Loading your digest…"
-                : dashboardMode === "hotTopics"
+                : dashboardMode === "stats"
+                  ? "Your reading stats"
+                  : dashboardMode === "search"
+                    ? "Search the last 7 days"
+                  : dashboardMode === "hotTopics"
                   ? `${hotTopics.length} trending ${hotTopics.length === 1 ? "topic" : "topics"} across ${stats.sourceCount} sources`
-                  : dashboardMode !== "keyword"
-                    ? `${stats.articleCount} articles across ${stats.sourceCount} sources`
-                    : selectedKeyword
-                      ? `${stats.articleCount} visible articles across ${stats.sourceCount} sources for "${selectedKeyword}"`
-                      : "Choose a keyword to focus your feed"}
+                  : dashboardMode === "forYou"
+                    ? forYouLoading
+                      ? "Ranking your feed…"
+                      : forYouFetchFailed
+                        ? "For You isn't available yet"
+                        : forYouEnabled === false
+                          ? "Personalization is turned off"
+                          : `${forYouArticles.length} articles ranked for you`
+                    : dashboardMode !== "keyword"
+                      ? `${stats.articleCount} articles across ${stats.sourceCount} sources`
+                      : selectedKeyword
+                        ? `${stats.articleCount} visible articles across ${stats.sourceCount} sources for "${selectedKeyword}"`
+                        : "Choose a keyword to focus your feed"}
             </span>
             {today && (
               <span style={{ fontSize: 11.5, color: "var(--sg-muted)", fontWeight: 400 }}>
@@ -2803,7 +2643,7 @@ export function DashboardPage() {
             )}
           </div>
 
-          {!loading && filteredArticles.length > 0 && dashboardMode !== "hotTopics" && (
+          {!loading && dashboardMode !== "hotTopics" && dashboardMode !== "stats" && dashboardMode !== "search" && (dashboardMode === "forYou" ? forYouArticles.length > 0 : filteredArticles.length > 0) && (
             <button
               onClick={handleExpandAll}
               style={{
@@ -2868,12 +2708,15 @@ export function DashboardPage() {
           </div>
         )}
 
-        {/* First-run prompt: sources added but feed never built */}
-        {!loading && !isFirstTimeUpdating && isFirstTimeBeforeUpdate && dashboardMode !== "keyword" && (
+        {/* First-run prompt: sources added but feed never built. Excludes Stats and
+            Search — neither reads the client-side article cache this prompt is about,
+            so telling a user to "Update Feed" before checking their streak or running a
+            search would be pointing them at a fetch their view doesn't need. */}
+        {!loading && !isFirstTimeUpdating && isFirstTimeBeforeUpdate && dashboardMode !== "keyword" && dashboardMode !== "stats" && dashboardMode !== "search" && (
           <FirstBriefingPrompt />
         )}
 
-        {!loading && !isFirstTimeUpdating && !isFirstTimeBeforeUpdate && sources.length > 0 && filteredArticles.length === 0 && !(dashboardMode === "keyword" && keywords.length === 0) && dashboardMode !== "hotTopics" && (
+        {!loading && !isFirstTimeUpdating && !isFirstTimeBeforeUpdate && sources.length > 0 && filteredArticles.length === 0 && !(dashboardMode === "keyword" && keywords.length === 0) && dashboardMode !== "hotTopics" && dashboardMode !== "forYou" && dashboardMode !== "stats" && dashboardMode !== "search" && (
           <div
             style={{
               padding: "22px 20px",
@@ -2897,23 +2740,161 @@ export function DashboardPage() {
         {!loading && dashboardMode === "hotTopics" && !isFirstTimeUpdating && !isFirstTimeBeforeUpdate && (
           <HotTopicsView
             topics={hotTopics}
-            sources={visibleSources}
-            expandedIds={expandedIds}
-            onToggleExpand={toggleExpand}
-            bookmarkedIds={bookmarkedIds}
-            onToggleBookmark={toggleBookmark}
-            seenIds={seenIds}
-            newSinceLastVisit={newSinceLastVisit}
-            summaryModes={summaryModes}
-            onSummaryModeChange={handleSummaryModeChange}
-            loadingModesByArticle={loadingModesByArticle}
-            onTrackLinkClick={handleLinkClick}
+            theme={theme}
             stats={stats}
+            renderArticle={(article, matchLabel) => {
+              const source = visibleSources.find(s => s.id === article.sourceId);
+              if (!source) return null;
+              return (
+                <ArticleCard
+                  article={article}
+                  source={source}
+                  ageState={getAgeState(article, seenIds)}
+                  expanded={expandedIds.has(article.id)}
+                  onToggleExpand={() => toggleExpand(article.id)}
+                  bookmarked={bookmarkedIds.has(article.id)}
+                  onToggleBookmark={() => toggleBookmark(article.id)}
+                  isNew={newSinceLastVisit.has(article.id)}
+                  summaryMode={summaryModes.get(article.id) ?? "default"}
+                  onSummaryModeChange={mode => handleSummaryModeChange(article.id, mode)}
+                  loadingModes={loadingModesByArticle.get(article.id) ?? new Set()}
+                  sourceCollapsed={false}
+                  matchLabel={matchLabel}
+                  onTrackLinkClick={() => handleLinkClick(article.id)}
+                />
+              );
+            }}
           />
         )}
 
+        {/* Stats — its own fetch, no article-pool involvement. */}
+        {!loading && dashboardMode === "stats" && !isFirstTimeUpdating && !isFirstTimeBeforeUpdate && (
+          <StatsPage />
+        )}
+
+        {/* Search — its own fetch, no article-pool involvement. */}
+        {!loading && dashboardMode === "search" && !isFirstTimeUpdating && !isFirstTimeBeforeUpdate && (
+          <SearchPage
+            renderArticle={(article, matchLabel) => {
+              const source = visibleSources.find(s => s.id === article.sourceId);
+              if (!source) return null;
+              return (
+                <ArticleCard
+                  article={article}
+                  source={source}
+                  ageState={getAgeState(article, seenIds)}
+                  expanded={expandedIds.has(article.id)}
+                  onToggleExpand={() => toggleExpand(article.id)}
+                  bookmarked={bookmarkedIds.has(article.id)}
+                  onToggleBookmark={() => toggleBookmark(article.id)}
+                  isNew={newSinceLastVisit.has(article.id)}
+                  summaryMode={summaryModes.get(article.id) ?? "default"}
+                  onSummaryModeChange={mode => handleSummaryModeChange(article.id, mode)}
+                  loadingModes={loadingModesByArticle.get(article.id) ?? new Set()}
+                  sourceCollapsed={false}
+                  matchLabel={matchLabel}
+                  onTrackLinkClick={() => handleLinkClick(article.id)}
+                />
+              );
+            }}
+          />
+        )}
+
+        {/* For You — endpoint not deployed yet / request failed. Graceful, not a crash or error banner. */}
+        {!loading && !isFirstTimeUpdating && !isFirstTimeBeforeUpdate && dashboardMode === "forYou" && !forYouLoading && forYouFetchFailed && (
+          <div
+            style={{
+              padding: "22px 20px",
+              borderRadius: 10,
+              border: "1px solid var(--sg-border)",
+              backgroundColor: "var(--sg-surface)",
+            }}
+          >
+            <div style={{ fontSize: 14, fontWeight: 600, color: "var(--sg-text)" }}>
+              For You isn&apos;t available yet.
+            </div>
+            <div style={{ fontSize: 12.5, color: "var(--sg-muted)", marginTop: 4, lineHeight: 1.6 }}>
+              Personalized ranking hasn&apos;t been turned on for your account yet. Check back soon.
+            </div>
+          </div>
+        )}
+
+        {/* For You — personalization explicitly disabled server-side */}
+        {!loading && !isFirstTimeUpdating && !isFirstTimeBeforeUpdate && dashboardMode === "forYou" && !forYouLoading && !forYouFetchFailed && forYouEnabled === false && (
+          <div
+            style={{
+              padding: "22px 20px",
+              borderRadius: 10,
+              border: "1px solid var(--sg-border)",
+              backgroundColor: "var(--sg-surface)",
+            }}
+          >
+            <div style={{ fontSize: 14, fontWeight: 600, color: "var(--sg-text)" }}>
+              Personalization is turned off.
+            </div>
+            <div style={{ fontSize: 12.5, color: "var(--sg-muted)", marginTop: 4, lineHeight: 1.6 }}>
+              Turn on personalized ranking to get a feed tailored to your reading habits.
+            </div>
+          </div>
+        )}
+
+        {/* For You — enabled but the server returned no articles (e.g. no subscriptions) */}
+        {!loading && !isFirstTimeUpdating && !isFirstTimeBeforeUpdate && dashboardMode === "forYou" && !forYouLoading && !forYouFetchFailed && forYouEnabled !== false && forYouArticles.length === 0 && (
+          <div
+            style={{
+              padding: "22px 20px",
+              borderRadius: 10,
+              border: "1px solid var(--sg-border)",
+              backgroundColor: "var(--sg-surface)",
+            }}
+          >
+            <div style={{ fontSize: 14, fontWeight: 600, color: "var(--sg-text)" }}>
+              Nothing to rank yet.
+            </div>
+            <div style={{ fontSize: 12.5, color: "var(--sg-muted)", marginTop: 4, lineHeight: 1.6 }}>
+              Add a source and update your feed, then check back here for a personalized ranking.
+            </div>
+          </div>
+        )}
+
+        {/* For You — loading skeletons */}
+        {!loading && !isFirstTimeUpdating && !isFirstTimeBeforeUpdate && dashboardMode === "forYou" && forYouLoading && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {Array.from({ length: 6 }).map((_, i) => <SkeletonCard key={i} />)}
+          </div>
+        )}
+
+        {/* For You — ranked feed, rendered in server order (do not re-sort) */}
+        {!loading && !isFirstTimeUpdating && !isFirstTimeBeforeUpdate && dashboardMode === "forYou" && !forYouLoading && !forYouFetchFailed && forYouEnabled !== false && forYouArticles.length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {forYouArticles.map((article) => {
+              const source = forYouSourcesById.get(article.sourceId) ?? createFallbackManagedSource(article.sourceId);
+              const explain = forYouExplainByArticle.get(article.id);
+              return (
+                <ArticleCard
+                  key={article.id}
+                  article={article}
+                  source={source}
+                  ageState={getAgeState(article, seenIds)}
+                  expanded={expandedIds.has(article.id)}
+                  onToggleExpand={() => toggleExpand(article.id)}
+                  bookmarked={bookmarkedIds.has(article.id)}
+                  onToggleBookmark={() => toggleBookmark(article.id)}
+                  isNew={false}
+                  summaryMode={summaryModes.get(article.id) ?? "default"}
+                  onSummaryModeChange={(mode) => handleSummaryModeChange(article.id, mode)}
+                  loadingModes={loadingModesByArticle.get(article.id) ?? new Set()}
+                  sourceCollapsed={false}
+                  explainChip={explain ? { text: buildForYouExplainChipText(explain, source.name), wildcard: explain.serendipity } : null}
+                  onTrackLinkClick={() => handleLinkClick(article.id)}
+                />
+              );
+            })}
+          </div>
+        )}
+
         {/* Feed grouped by source */}
-        {!loading && visibleSources.length > 0 && filteredArticles.length > 0 && dashboardMode !== "hotTopics" && (
+        {!loading && visibleSources.length > 0 && filteredArticles.length > 0 && dashboardMode !== "hotTopics" && dashboardMode !== "forYou" && dashboardMode !== "stats" && dashboardMode !== "search" && (
           <div style={{ display: "flex", flexDirection: "column", gap: isCompact ? 32 : 44 }}>
             {visibleSources.map((source) => {
               const srcArticles = articlesBySource.get(source.id) ?? [];

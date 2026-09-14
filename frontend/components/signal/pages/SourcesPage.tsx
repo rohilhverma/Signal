@@ -1,9 +1,9 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Plus, Trash2, Globe, Newspaper, ChevronDown } from "lucide-react";
+import { Plus, Trash2, Globe, Newspaper, ChevronDown, BellOff, Bell } from "lucide-react";
 import { useAuth } from "../context/AuthContext";
-import { useAppState, type ContentProfile } from "../context/AppStateContext";
+import { useAppState, type ContentProfile, type ManagedSource } from "../context/AppStateContext";
 import { useToast } from "../context/ToastContext";
 import { usePreferences } from "../context/PreferencesContext";
 import { DEFAULT_ACCENT } from "../data/mockArticles";
@@ -61,13 +61,21 @@ function ProfileDropdown({
   const [open, setOpen] = useState(false);
   const [dropdownPos, setDropdownPos] = useState({ top: 0, right: 0 });
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
   const current = PROFILE_OPTIONS.find((o) => o.key === value)!;
 
   // Close on outside click
   useEffect(() => {
     if (!open) return;
     const handle = (e: MouseEvent) => {
-      if (!triggerRef.current?.contains(e.target as Node)) setOpen(false);
+      // The menu is position:fixed and a sibling of the trigger, so it is NOT inside
+      // triggerRef. Checking the trigger alone closes the menu on mousedown over one of
+      // its own items, unmounting it before the click lands - the option looks clickable
+      // and silently does nothing. Both refs have to be consulted.
+      const target = e.target as Node;
+      if (triggerRef.current?.contains(target)) return;
+      if (menuRef.current?.contains(target)) return;
+      setOpen(false);
     };
     document.addEventListener("mousedown", handle);
     return () => document.removeEventListener("mousedown", handle);
@@ -116,6 +124,7 @@ function ProfileDropdown({
       {open && (
         <div
           role="listbox"
+          ref={menuRef}
           style={{
             position: "fixed",
             top: dropdownPos.top,
@@ -178,6 +187,181 @@ function ProfileDropdown({
   );
 }
 
+// ─── Mute menu ────────────────────────────────────────────────────────────────
+
+const SNOOZE_OPTIONS: { days: number | null; label: string; description: string }[] = [
+  { days: 1, label: "Snooze 1 day", description: "Keeps collecting while hidden" },
+  { days: 7, label: "Snooze 1 week", description: "Keeps collecting while hidden" },
+  { days: 30, label: "Snooze 30 days", description: "Keeps collecting while hidden" },
+  { days: null, label: "Mute indefinitely", description: "Also stops the nightly scrape" },
+];
+
+/** Badge text for a hidden source. Empty string when it is live. */
+function muteLabel(source: ManagedSource): string {
+  if (source.mutedIndefinitely) return "Muted";
+  if (!source.mutedUntil) return "";
+  const until = new Date(source.mutedUntil);
+  return `Snoozed until ${until.toLocaleDateString(undefined, { month: "short", day: "numeric" })}`;
+}
+
+function MuteMenu({
+  source,
+  onMute,
+  onUnmute,
+}: {
+  source: ManagedSource;
+  onMute: (days: number | null) => void;
+  onUnmute: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [dropdownPos, setDropdownPos] = useState({ top: 0, right: 0 });
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const isMuted = source.mutedUntil !== null;
+
+  useEffect(() => {
+    if (!open) return;
+    const handle = (e: MouseEvent) => {
+      // The menu is position:fixed and a sibling of the trigger, so it is NOT inside
+      // triggerRef. Checking the trigger alone closes the menu on mousedown over one of
+      // its own items, unmounting it before the click lands - the option looks clickable
+      // and silently does nothing. Both refs have to be consulted.
+      const target = e.target as Node;
+      if (triggerRef.current?.contains(target)) return;
+      if (menuRef.current?.contains(target)) return;
+      setOpen(false);
+    };
+    document.addEventListener("mousedown", handle);
+    return () => document.removeEventListener("mousedown", handle);
+  }, [open]);
+
+  const handleToggle = () => {
+    if (!open && triggerRef.current) {
+      const rect = triggerRef.current.getBoundingClientRect();
+      setDropdownPos({ top: rect.bottom + 4, right: window.innerWidth - rect.right });
+    }
+    setOpen((v) => !v);
+  };
+
+  const Icon = isMuted ? BellOff : Bell;
+
+  return (
+    <div style={{ position: "relative" }}>
+      <button
+        ref={triggerRef}
+        onClick={handleToggle}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={isMuted ? `Unmute or reschedule ${source.name}` : `Mute ${source.name}`}
+        title={isMuted ? muteLabel(source) : "Mute this source"}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: 30,
+          height: 30,
+          borderRadius: 6,
+          border: "1px solid var(--sg-border)",
+          backgroundColor: isMuted ? "var(--sg-surface-hover)" : "transparent",
+          color: isMuted ? "var(--sg-text)" : "var(--sg-muted)",
+          cursor: "pointer",
+          flexShrink: 0,
+          transition: "color 0.12s ease, border-color 0.12s ease",
+        }}
+      >
+        <Icon style={{ width: 13, height: 13 }} />
+      </button>
+
+      {open && (
+        <div
+          role="menu"
+          ref={menuRef}
+          style={{
+            position: "fixed",
+            top: dropdownPos.top,
+            right: dropdownPos.right,
+            zIndex: 9999,
+            minWidth: 210,
+            backgroundColor: "var(--sg-surface)",
+            border: "1px solid var(--sg-border)",
+            borderRadius: 8,
+            boxShadow: "0 8px 24px rgba(0,0,0,0.12), 0 2px 6px rgba(0,0,0,0.06)",
+            overflow: "hidden",
+          }}
+        >
+          {isMuted && (
+            <button
+              role="menuitem"
+              onClick={() => {
+                onUnmute();
+                setOpen(false);
+              }}
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "flex-start",
+                width: "100%",
+                padding: "8px 12px",
+                background: "none",
+                border: "none",
+                borderBottom: "1px solid var(--sg-border)",
+                cursor: "pointer",
+                textAlign: "left",
+              }}
+              onMouseEnter={(e) =>
+                ((e.currentTarget as HTMLElement).style.backgroundColor = "var(--sg-surface-hover)")
+              }
+              onMouseLeave={(e) =>
+                ((e.currentTarget as HTMLElement).style.backgroundColor = "transparent")
+              }
+            >
+              <span style={{ fontSize: 12.5, fontWeight: 600, color: "var(--sg-text)" }}>Unmute</span>
+              <span style={{ fontSize: 11, color: "var(--sg-muted)", marginTop: 1 }}>
+                {muteLabel(source)}
+              </span>
+            </button>
+          )}
+          {SNOOZE_OPTIONS.map((opt) => (
+            <button
+              key={opt.label}
+              role="menuitem"
+              onClick={() => {
+                onMute(opt.days);
+                setOpen(false);
+              }}
+              style={{
+                display: "flex",
+                flexDirection: "column",
+                alignItems: "flex-start",
+                width: "100%",
+                padding: "8px 12px",
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                textAlign: "left",
+                transition: "background-color 0.12s ease",
+              }}
+              onMouseEnter={(e) =>
+                ((e.currentTarget as HTMLElement).style.backgroundColor = "var(--sg-surface-hover)")
+              }
+              onMouseLeave={(e) =>
+                ((e.currentTarget as HTMLElement).style.backgroundColor = "transparent")
+              }
+            >
+              <span style={{ fontSize: 12.5, fontWeight: 500, color: "var(--sg-text)" }}>
+                {opt.label}
+              </span>
+              <span style={{ fontSize: 11, color: "var(--sg-muted)", marginTop: 1 }}>
+                {opt.description}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Delete Confirm ───────────────────────────────────────────────────────────
 
 function DeleteConfirm({ onConfirm, onCancel }: { onConfirm: () => void; onCancel: () => void }) {
@@ -224,15 +408,35 @@ function SourceRow({
   source,
   isCompact,
 }: {
-  source: import("../context/AppStateContext").ManagedSource;
+  source: ManagedSource;
   isCompact: boolean;
 }) {
   const { authenticatedFetch } = useAuth();
-  const { setSourceProfile, removeSource } = useAppState();
+  const { setSourceProfile, removeSource, muteSource, unmuteSource } = useAppState();
   const { showToast } = useToast();
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [faviconErrored, setFaviconErrored] = useState(false);
   const accent = source.accentColor ?? DEFAULT_ACCENT;
+  const isMuted = source.mutedUntil !== null;
+
+  const handleMute = async (days: number | null) => {
+    const ok = await muteSource(source.id, days);
+    if (!ok) {
+      showToast("Could not mute that source.", "error");
+      return;
+    }
+    showToast(
+      days === null
+        ? `Muted "${source.name}" - it will stop being scraped`
+        : `Snoozed "${source.name}" for ${days} day${days !== 1 ? "s" : ""}`,
+      "info"
+    );
+  };
+
+  const handleUnmute = async () => {
+    const ok = await unmuteSource(source.id);
+    showToast(ok ? `"${source.name}" is back in your feed` : "Could not unmute that source.", ok ? "success" : "error");
+  };
 
   const handleDelete = async () => {
     try {
@@ -282,6 +486,7 @@ function SourceRow({
           flexShrink: 0,
           border: `1.5px solid ${accent}44`,
           backgroundColor: `${accent}12`,
+          opacity: isMuted ? 0.45 : 1,
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
@@ -302,7 +507,7 @@ function SourceRow({
       </div>
 
       {/* Source info */}
-      <div style={{ flex: 1, minWidth: 0 }}>
+      <div style={{ flex: 1, minWidth: 0, opacity: isMuted ? 0.55 : 1 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <span style={{ fontSize: 13.5, fontWeight: 500, color: "var(--sg-text)", lineHeight: 1.3 }}>
             {source.name}
@@ -317,6 +522,20 @@ function SourceRow({
               padding: "1px 7px",
             }}>
               Paywalled
+            </span>
+          )}
+          {isMuted && (
+            <span style={{
+              fontSize: 10,
+              fontWeight: 600,
+              color: "var(--sg-muted)",
+              backgroundColor: "var(--sg-surface-hover)",
+              border: "1px solid var(--sg-border)",
+              borderRadius: 99,
+              padding: "1px 7px",
+              whiteSpace: "nowrap",
+            }}>
+              {muteLabel(source)}
             </span>
           )}
         </div>
@@ -343,6 +562,7 @@ function SourceRow({
               showToast(`"${source.name}" set to ${PROFILE_OPTIONS.find((o) => o.key === profile)!.label}`, "success");
             }}
           />
+          <MuteMenu source={source} onMute={handleMute} onUnmute={handleUnmute} />
           <button
             onClick={() => setConfirmDelete(true)}
             aria-label={`Remove ${source.name}`}

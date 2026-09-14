@@ -16,4 +16,5 @@ public interface ArticleFeedView {
     Integer getWordCount();
     String getPublishedAt();
     Instant getProcessedAt();
+    String getTopics();
 }

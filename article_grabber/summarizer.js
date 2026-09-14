@@ -2,9 +2,9 @@ import { GoogleGenAI } from '@google/genai'
 import "dotenv/config"
 
 export const prompts = {
-    "shorter" : "You are a news wire editor. Summarize each article in 2-3 bullet points. Each bullet must be one sentence, maximum 20 words. Bullet 1: What happened — the core event, stated as a fact. Bullet 2: Who is involved and what specifically they did. Bullet 3 (only if needed): A key number or outcome that adds value. Rules: No filler phrases like \"it's worth noting\" or \"according to\"; No background or history unless critical to understanding the event; If a bullet doesn't add new information, cut it; Start each bullet with the subject, not a verb. Return ONLY a valid JSON array. Do not wrap in markdown backticks or code blocks, only use objects containing \"title\" and \"summary\".",
-    "default" : "You are a news briefing editor. For each article, write a single paragraph summary of 4-6 sentences. Each summary must include: 1. The core event — what happened, stated directly; 2. Context — how this connects to related events or industry trends; 3. Implication — what this signals or why it matters going forward; 4. Key specifics — include relevant numbers, names, and concrete details. Write in a flowing paragraph, not bullet points. Do not use filler phrases. State facts directly with no editorializing. Return ONLY a valid JSON array. Do not wrap in markdown backticks or code blocks, only use objects containing \"title\" and \"summary\".",
-    "longer": "You are a senior analyst writing intelligence briefings. For each article, you MUST write exactly 3 paragraphs separated by blank lines. No more, no fewer.\n\nParagraph 1 — What happened: who was involved, concrete specifics, relevant numbers, names, dates, and technical details from the article.\n\nParagraph 2 — Context: how this event connects to related developments, competing efforts, or previous events. Draw only from information within the article. If the article provides little context, connect the facts and details stated in paragraph 1.\n\nParagraph 3 — Implications: what this signals going forward, based only on what the article states or directly implies. If implications are not explicit, derive them logically from the facts in paragraph 1.\n\nRules:\n- Output MUST be exactly 3 paragraphs separated by blank lines\n- No labels, headers, or markers before paragraphs\n- No filler phrases or editorializing\n- Never introduce outside knowledge\n- Every sentence must be traceable to the article text\n\nReturn ONLY a valid JSON array. Each object has \"title\" and a \"summary\" object with three fields: \"happened\", \"context\", and \"implications\" — one paragraph of prose each."
+    "shorter" : "You are a news wire editor. Summarize each article in 2-3 bullet points. Each bullet must be one sentence, maximum 20 words. Bullet 1: What happened — the core event, stated as a fact. Bullet 2: Who is involved and what specifically they did. Bullet 3 (only if needed): A key number or outcome that adds value. Rules: No filler phrases like \"it's worth noting\" or \"according to\"; No background or history unless critical to understanding the event; If a bullet doesn't add new information, cut it; Start each bullet with the subject, not a verb. \n\nTAGS: Also return a \"topics\" array of 5-8 tags for each article. Every tag names a real entity the article is actually about — a company, person, product, technology, or place — written as a proper noun: \"Nvidia\", \"GPU\", \"Antitrust\", \"PlayStation\". Never use generic words, sentence fragments, or the article's subject restated as a phrase. These tags are one shared vocabulary across every article, so always use the canonical name rather than a variant, abbreviation, or possessive — \"Nvidia\", not \"NVIDIA Corp\" or \"Nvidia's\"; \"OpenAI\", not \"Open AI\". Keep each tag to one to three words, capitalized the way the entity is normally written, and never put a comma inside a tag.\n\nReturn ONLY a valid JSON array. Do not wrap in markdown backticks or code blocks, only use objects containing \"title\", \"summary\", and \"topics\".",
+    "default" : "You are a news briefing editor. For each article, write a single paragraph summary of 4-6 sentences. Each summary must include: 1. The core event — what happened, stated directly; 2. Context — how this connects to related events or industry trends; 3. Implication — what this signals or why it matters going forward; 4. Key specifics — include relevant numbers, names, and concrete details. Write in a flowing paragraph, not bullet points. Do not use filler phrases. State facts directly with no editorializing. \n\nTAGS: Also return a \"topics\" array of 5-8 tags for each article. Every tag names a real entity the article is actually about — a company, person, product, technology, or place — written as a proper noun: \"Nvidia\", \"GPU\", \"Antitrust\", \"PlayStation\". Never use generic words, sentence fragments, or the article's subject restated as a phrase. These tags are one shared vocabulary across every article, so always use the canonical name rather than a variant, abbreviation, or possessive — \"Nvidia\", not \"NVIDIA Corp\" or \"Nvidia's\"; \"OpenAI\", not \"Open AI\". Keep each tag to one to three words, capitalized the way the entity is normally written, and never put a comma inside a tag.\n\nReturn ONLY a valid JSON array. Do not wrap in markdown backticks or code blocks, only use objects containing \"title\", \"summary\", and \"topics\".",
+    "longer": "You are a senior analyst writing intelligence briefings. For each article, you MUST write exactly 3 paragraphs separated by blank lines. No more, no fewer.\n\nParagraph 1 — What happened: who was involved, concrete specifics, relevant numbers, names, dates, and technical details from the article.\n\nParagraph 2 — Context: how this event connects to related developments, competing efforts, or previous events. Draw only from information within the article. If the article provides little context, connect the facts and details stated in paragraph 1.\n\nParagraph 3 — Implications: what this signals going forward, based only on what the article states or directly implies. If implications are not explicit, derive them logically from the facts in paragraph 1.\n\nRules:\n- Output MUST be exactly 3 paragraphs separated by blank lines\n- No labels, headers, or markers before paragraphs\n- No filler phrases or editorializing\n- Never introduce outside knowledge\n- Every sentence must be traceable to the article text\n\nTAGS: Also return a \"topics\" array of 5-8 tags for each article. Every tag names a real entity the article is actually about — a company, person, product, technology, or place — written as a proper noun: \"Nvidia\", \"GPU\", \"Antitrust\", \"PlayStation\". Never use generic words, sentence fragments, or the article's subject restated as a phrase. These tags are one shared vocabulary across every article, so always use the canonical name rather than a variant, abbreviation, or possessive — \"Nvidia\", not \"NVIDIA Corp\" or \"Nvidia's\"; \"OpenAI\", not \"Open AI\". Keep each tag to one to three words, capitalized the way the entity is normally written, and never put a comma inside a tag.\n\nReturn ONLY a valid JSON array. Each object has \"title\", a \"summary\" object with three fields: \"happened\", \"context\", and \"implications\" — one paragraph of prose each, and a \"topics\" array of strings."
 }
 
 let aiClient = null
@@ -41,6 +41,17 @@ async function summarizeWithGemini(articles, mode) {
 }
 
 /**
+ * Entity tags for the personalization profile. In the schema and in `required` for every
+ * mode for the same reason `longer` structures its summary there: a constrained schema is
+ * enforced during generation, a prompt rule is only a suggestion. Asking in prose for tags
+ * would get them most of the time; asking in the schema gets them every time.
+ *
+ * The 5-8 count itself cannot be expressed to both providers (Ollama's `format` ignores
+ * minItems/maxItems), so it stays in the prompt and is bounded again in `toTopics`.
+ */
+const TOPICS_SCHEMA = { type: 'array', items: { type: 'string' } }
+
+/**
  * Shape both providers must return. Gemini takes this as `responseSchema`,
  * Ollama as `format` — same JSON Schema either way.
  */
@@ -50,9 +61,10 @@ const RESPONSE_SCHEMA = {
         type: 'object',
         properties: {
             title: { type: 'string' },
-            summary: { type: 'string' }
+            summary: { type: 'string' },
+            topics: TOPICS_SCHEMA
         },
-        required: ['title', 'summary']
+        required: ['title', 'summary', 'topics']
     }
 }
 
@@ -76,9 +88,10 @@ const LONGER_SCHEMA = {
                     implications: { type: 'string' }
                 },
                 required: ['happened', 'context', 'implications']
-            }
+            },
+            topics: TOPICS_SCHEMA
         },
-        required: ['title', 'summary']
+        required: ['title', 'summary', 'topics']
     }
 }
 
@@ -86,15 +99,48 @@ function schemaFor(mode) {
     return mode === 'longer' ? LONGER_SCHEMA : RESPONSE_SCHEMA
 }
 
-/** Collapses the structured "longer" shape back into the single string callers expect. */
+/** Upper bound on tags kept per article, matching the "5-8" the prompt asks for. */
+const MAX_TOPICS = 8
+
+/**
+ * Tags are advisory data, not the payload — a malformed `topics` must never cost us the
+ * summary that came with it. Anything that is not an array of usable strings degrades to
+ * [], and the article is still saved untagged.
+ *
+ * Commas are stripped because the column is a comma-joined string on the Java side; a tag
+ * containing one would silently split into two.
+ */
+function toTopics(value) {
+    if (!Array.isArray(value)) return []
+    const seen = new Set()
+    const out = []
+    for (const raw of value) {
+        if (typeof raw !== 'string') continue
+        const tag = raw.replace(/,/g, ' ').replace(/\s+/g, ' ').trim()
+        if (!tag) continue
+        const key = tag.toLowerCase()
+        if (seen.has(key)) continue
+        seen.add(key)
+        out.push(tag)
+        if (out.length === MAX_TOPICS) break
+    }
+    return out
+}
+
+/**
+ * Collapses the structured "longer" shape back into the single string callers expect, and
+ * carries `topics` through for every mode. Both providers run their parsed output through
+ * this, so both return the same { title, summary, topics } shape.
+ */
 function normalize(entries, mode) {
-    if (mode !== 'longer') return entries
+    if (!Array.isArray(entries)) return []
     return entries.map(entry => ({
-        title: entry.title,
-        summary: typeof entry.summary === 'string'
-            ? entry.summary
-            : [entry.summary?.happened, entry.summary?.context, entry.summary?.implications]
-                .filter(Boolean).join('\n\n')
+        title: entry?.title,
+        summary: mode !== 'longer' || typeof entry?.summary === 'string'
+            ? entry?.summary
+            : [entry?.summary?.happened, entry?.summary?.context, entry?.summary?.implications]
+                .filter(Boolean).join('\n\n'),
+        topics: toTopics(entry?.topics)
     }))
 }
 

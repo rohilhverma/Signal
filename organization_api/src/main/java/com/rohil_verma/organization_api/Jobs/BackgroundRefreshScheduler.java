@@ -30,11 +30,14 @@ public class BackgroundRefreshScheduler {
 
     /**
      * Queues a refresh for every user. Nothing runs yet - the jobs sit on the table until
-     * the runner finds the machine idle. If the Mac is asleep at this hour the work is not
-     * lost, which is the whole reason for having a queue rather than a timed scrape.
+     * the runner finds the machine idle.
+     *
+     * <p>A failure for one user is logged and skipped rather than aborting the sweep, so one
+     * broken account cannot cost everyone else their nightly refresh.
+     *
+     * @return how many jobs were created across all users
      */
-    @Scheduled(cron = "${scrape.enqueue-cron:0 0 3 * * *}")
-    public void enqueueBackgroundRefresh() {
+    public int enqueueForAllUsers() {
         int totalQueued = 0;
         for (User user : userRepository.findAll()) {
             try {
@@ -46,12 +49,36 @@ public class BackgroundRefreshScheduler {
             }
         }
         log.info("Background refresh queued {} job(s)", totalQueued);
+        return totalQueued;
     }
 
-    /** Finished jobs are kept briefly for inspection, then cleared. */
-    @Scheduled(cron = "${scrape.purge-cron:0 30 4 * * *}")
-    public void purgeFinishedJobs() {
+    /**
+     * In-JVM fallback trigger, disabled by default - {@code scrape.enqueue-cron} ships as
+     * "-", Spring's value for a cron that never fires. The real trigger is the launchd agent
+     * calling {@link AdminJobController}, because launchd catches up an interval missed
+     * while the Mac was asleep and this scheduler does not. Set a cron expression here only
+     * on a machine that stays awake.
+     */
+    @Scheduled(cron = "${scrape.enqueue-cron:-}")
+    public void enqueueBackgroundRefresh() {
+        enqueueForAllUsers();
+    }
+
+    /**
+     * Finished jobs are kept briefly for inspection, then cleared.
+     *
+     * <p>Disabled by default for the same reason as {@code scrape.enqueue-cron}: at 04:30
+     * this JVM no longer exists, because the nightly script stops the API as soon as the
+     * queue drains. {@code POST /admin/refresh/sweep} runs it inside the wake window.
+     */
+    @Scheduled(cron = "${scrape.purge-cron:-}")
+    public void purgeFinishedJobsScheduled() {
+        purgeFinishedJobs();
+    }
+
+    public int purgeFinishedJobs() {
         int purged = jobRepository.purgeFinishedBefore(Instant.now().minus(3, ChronoUnit.DAYS));
         if (purged > 0) log.info("Purged {} finished scrape job(s)", purged);
+        return purged;
     }
 }

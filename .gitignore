@@ -1,1 +1,10 @@
 .DS_Store
+
+scripts/*.log
+
+# Local automation: launchd agents and shell scripts carry the admin token inline
+# and hardcoded absolute paths for this machine. Documented in SYSTEM.md, not shipped.
+scripts/
+
+# Internal walkthrough — names known bugs and machine-specific details. Kept local.
+SYSTEM.md

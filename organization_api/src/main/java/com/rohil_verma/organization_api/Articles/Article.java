@@ -57,7 +57,18 @@ public class Article {
     @Column(name = "paywall")
     private Boolean paywall;
 
+    // Entity tags emitted by the summarizer alongside the summary, comma-joined. The
+    // personalization profile prefers these over tokenized title/summary text: they are
+    // real entities rather than frequent words. Null for anything scraped before tagging
+    // shipped, which is what TermExtractor's fallback path exists to cover.
+    @Column(name = "topics", columnDefinition = "text")
+    private String topics;
+
     public Article(){}
+
+    public String getTopics(){return topics;}
+
+    public void setTopics(String topics){this.topics = topics;}
 
     public Integer getId() {return id;}
 
