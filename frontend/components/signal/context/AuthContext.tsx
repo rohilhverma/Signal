@@ -21,6 +21,12 @@ interface AuthContextValue {
   user: AuthUser | null;
   isAuthenticated: boolean;
   isInitializing: boolean;
+  /**
+   * Set when the first load failed because the API could not be reached at all, as opposed to
+   * answering "not authenticated". `user === null` cannot tell those apart, and advising
+   * someone to sign in while the server is down sends them looking in the wrong place.
+   */
+  bootstrapError: "unreachable" | null;
   signIn: (credentials: { username: string; password: string; rememberMe: boolean }) => Promise<void>;
   signUp: (credentials: { username: string; email: string; password: string }) => Promise<void>;
   signOut: () => Promise<void>;
@@ -51,6 +57,7 @@ async function requestRefresh(): Promise<Response> {
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [isInitializing, setIsInitializing] = useState(true);
+  const [bootstrapError, setBootstrapError] = useState<"unreachable" | null>(null);
   const refreshInFlightRef = useRef<Promise<boolean> | null>(null);
 
   const clearSession = useCallback(() => {
@@ -147,11 +154,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           return;
         }
         setUser(nextUser);
-      } catch {
+      } catch (error) {
         if (cancelled) {
           return;
         }
         clearSession();
+        // fetch rejects with a TypeError when the request never arrived at all; every other
+        // failure here means the API answered, and the answer was "not authenticated".
+        setBootstrapError(error instanceof TypeError ? "unreachable" : null);
       } finally {
         if (!cancelled) {
           setIsInitializing(false);
@@ -176,7 +186,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       });
 
       if (!response.ok) {
-        throw new Error(await readResponseMessage(response));
+        throw new Error(
+          response.status === 401
+            ? "Incorrect username or password."
+            : await readResponseMessage(response)
+        );
       }
 
       try {
@@ -246,13 +260,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       user,
       isAuthenticated: user !== null,
       isInitializing,
+      bootstrapError,
       signIn,
       signUp,
       signOut,
       authenticatedFetch,
       refreshUser,
     }),
-    [authenticatedFetch, isInitializing, refreshUser, signIn, signOut, signUp, user]
+    [authenticatedFetch, bootstrapError, isInitializing, refreshUser, signIn, signOut, signUp, user]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

@@ -28,6 +28,7 @@
 	</scm>
 	<properties>
 		<java.version>21</java.version>
+		<spring-cloud-aws.version>4.0.0</spring-cloud-aws.version>
 	</properties>
 	<dependencies>
 
@@ -35,6 +36,21 @@
 			<groupId>com.bucket4j</groupId>
 			<artifactId>bucket4j-core</artifactId>
 			<version>8.10.1</version>
+		</dependency>
+
+		<!-- SQS transport for the nightly / Update Feed scrape fan-out, replacing the
+		     Postgres-backed scrape_jobs queue. -->
+		<dependency>
+			<groupId>io.awspring.cloud</groupId>
+			<artifactId>spring-cloud-aws-starter-sqs</artifactId>
+		</dependency>
+
+		<!-- DynamoDB article store, replacing the Postgres articles / seen_guids /
+		     site_feeds tables. Version comes from the awspring BOM below, which imports
+		     the AWS SDK BOM. -->
+		<dependency>
+			<groupId>software.amazon.awssdk</groupId>
+			<artifactId>dynamodb</artifactId>
 		</dependency>
 
 
@@ -102,6 +118,20 @@
 			<scope>test</scope>
 		</dependency>
 	</dependencies>
+
+	<!-- Imports the AWS SDK BOM, so the DynamoDB dependency above needs no explicit
+	     version. Same arrangement the pre-local build used. -->
+	<dependencyManagement>
+		<dependencies>
+			<dependency>
+				<groupId>io.awspring.cloud</groupId>
+				<artifactId>spring-cloud-aws-dependencies</artifactId>
+				<version>${spring-cloud-aws.version}</version>
+				<type>pom</type>
+				<scope>import</scope>
+			</dependency>
+		</dependencies>
+	</dependencyManagement>
 
 	<build>
 		<plugins>

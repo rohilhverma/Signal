@@ -4,9 +4,6 @@ import java.time.Instant;
 import java.time.temporal.ChronoUnit;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentMap;
-
-import org.jspecify.annotations.NonNull;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -18,8 +15,8 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
-import com.rohil_verma.organization_api.Articles.ArticleFeedView;
-import com.rohil_verma.organization_api.Articles.ArticleService;
+import com.rohil_verma.organization_api.DynamoDB.DynamoService;
+import com.rohil_verma.organization_api.DynamoDB.FeedArticle;
 import com.rohil_verma.organization_api.Users.MuteRequest;
 import com.rohil_verma.organization_api.Users.Subscription;
 import com.rohil_verma.organization_api.Users.SubscriptionDTO;
@@ -35,7 +32,7 @@ public class WebsiteController {
     private UserService userService;
 
     @Autowired
-    private ArticleService articleService;
+    private DynamoService dynamoService;
 
     @GetMapping("/links/user")
     public List<String> WebsitesForUser(@AuthenticationPrincipal User currentUser) {
@@ -61,7 +58,7 @@ public class WebsiteController {
 
     @GetMapping("/user/website")
     public Map<String, WebsiteContent> returnUserContent(@AuthenticationPrincipal User currentUser) {
-        return articleService.getUserContent(currentUser.getUsername());
+        return dynamoService.getUserContent(currentUser.getUsername());
     }
 
     @PostMapping("/user/website")
@@ -77,8 +74,8 @@ public class WebsiteController {
      * characters returns an empty list rather than a full-table dump.
      */
     @GetMapping("/user/search")
-    public List<ArticleFeedView> searchUserArticles(@AuthenticationPrincipal User currentUser, @RequestParam("q") String q) {
-        return articleService.searchUserArticles(currentUser.getUsername(), q);
+    public List<FeedArticle> searchUserArticles(@AuthenticationPrincipal User currentUser, @RequestParam("q") String q) {
+        return dynamoService.searchUserArticles(currentUser.getUsername(), q);
     }
 
     /** Every subscribed source with its mute state - the sources screen reads this, not the feed. */
@@ -116,20 +113,15 @@ public class WebsiteController {
     private ResponseEntity<String> applyMute(String username, String websiteURL, Instant until) {
         ResponseEntity<String> response = userService.setMuteForUser(username, websiteURL, until);
         if (response.getStatusCode().is2xxSuccessful()) {
-            articleService.invalidateUserContent(username);
+            dynamoService.invalidateUserContent(username);
         }
         return response;
     }
 
-    @GetMapping("/user/website/cache")
-    public ConcurrentMap<String, @NonNull String> getMethodName() {
-        return articleService.cacheContent();
-    }
-
     @PostMapping("/user/url/resummarization")
-    public String resummarize(@RequestBody UserRequest request) throws Exception {
-        String result = articleService.resummarizeRequest(request.getArticleLink(), request.getWebsiteContentMode());
-        articleService.updateSummary(request.getWebsiteURL(), request.getArticleLink(), request.getWebsiteContentMode(), result);
+    public String resummarize(@RequestBody UserRequest request) {
+        String result = dynamoService.resummarizeRequest(request.getArticleLink(), request.getWebsiteContentMode());
+        dynamoService.updateSummary(request.getWebsiteURL(), request.getArticleLink(), request.getWebsiteContentMode(), result);
         return result;
     }
 }

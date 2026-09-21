@@ -1,6 +1,5 @@
 package com.rohil_verma.organization_api.Tokens;
 
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.HttpStatus;
@@ -25,8 +24,11 @@ import com.rohil_verma.organization_api.Users.UserRepository;
 @EnableWebSecurity
 public class ConfigJWT { 
     
-    @Autowired
-    private UserRepository userRepository;
+    private final UserRepository userRepository;
+
+    ConfigJWT(UserRepository userRepository) {
+        this.userRepository = userRepository;
+    }
 
     @Bean
     BCryptPasswordEncoder passwordEncoder() {return new BCryptPasswordEncoder();}
@@ -61,11 +63,9 @@ public class ConfigJWT {
             .csrf(csrf -> csrf.disable())
             .sessionManagement(session -> session.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
-                .requestMatchers("/auth/**").permitAll()
-                // Called by the launchd agent, which carries no cookie. Guarded by the
-                // X-Admin-Token shared secret inside AdminJobController instead: single-user
-                // mode authenticates every request, so the chain cannot be the gate here.
-                .requestMatchers("/admin/**").permitAll()
+               .requestMatchers("/auth/**").permitAll()
+               .requestMatchers("/admin/**").permitAll()                                   
+               .requestMatchers("/error").permitAll()
                 .anyRequest().authenticated()
             )
             .exceptionHandling(ex -> ex.authenticationEntryPoint(unauthorizedEntryPoint()))

@@ -1,0 +1,125 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Template for organization_api/src/main/resources/application.properties
+#
+#   cp organization_api/application.properties.example \
+#      organization_api/src/main/resources/application.properties
+#
+# The real file is gitignored (see organization_api/.gitignore) because it holds a database
+# password, a Gemini key, both JWT signing keys and the admin token. This template is tracked so
+# that the shape of the configuration survives a machine change - losing the real file used to
+# mean re-deriving every property name from source.
+#
+# Every value below is a placeholder. Nothing here is a working credential.
+# ─────────────────────────────────────────────────────────────────────────────
+
+spring.application.name=organization_api
+
+# ─── Postgres ────────────────────────────────────────────────────────────────
+# Accounts, subscriptions, saved articles, activity and refresh tokens. Articles are NOT here:
+# they live in DynamoDB. Local install via `brew services start postgresql@14`.
+spring.datasource.url=jdbc:postgresql://localhost:5432/postgres
+spring.datasource.username=CHANGE_ME
+spring.datasource.password=CHANGE_ME
+spring.datasource.driver-class-name=org.postgresql.Driver
+
+# `update` rather than a migration tool. It is what this project has always used, and it has one
+# sharp edge worth knowing: Hibernate will not add a unique constraint to a table that already
+# contains duplicate rows, it just skips it. That is what UserActivityDedupRunner exists to work
+# around.
+spring.jpa.hibernate.ddl-auto=update
+spring.jpa.properties.hibernate.format_sql=true
+spring.jpa.show-sql=true
+
+# ─── AWS ─────────────────────────────────────────────────────────────────────
+# No credentials here on purpose. The SDK resolves them from the environment, the shared AWS
+# profile (~/.aws/credentials), or an instance role, so they never enter version control. For the
+# API running on your own machine the usual setup is `aws configure` once.
+aws.region=us-east-2
+aws.dynamodb.table-name=MyScrapingHandlerTable
+
+# Blank targets the real DynamoDB endpoint for the region. Point at http://localhost:8000 to run
+# everything against DynamoDB Local instead - the one setting that makes the store testable
+# without an AWS account.
+aws.dynamodb.endpoint=
+
+# Queue URL or bare queue name; a name is resolved with GetQueueUrl on first use. Created by
+# infra/aws-setup.sh. Blank disables enqueueing entirely: /admin/refresh and Update Feed log an
+# error and send nothing, rather than failing the request.
+news_scraper_queue=
+
+# Keeps the SQS client in the same region as the DynamoDB client above.
+spring.cloud.aws.region.static=${aws.region}
+
+# ─── Model ───────────────────────────────────────────────────────────────────
+# Used for on-demand re-summarization only. Batch summarization of new articles happens inside the
+# Lambda, which carries its own copy of this key in its function configuration. The prompts
+# themselves live in src/main/resources/prompts.json.
+GEMINI_API_KEY=CHANGE_ME
+
+# ─── JWT signing ─────────────────────────────────────────────────────────────
+# Two independent HMAC keys. Generate each with:
+#   openssl rand -base64 32
+# Rotating either one invalidates every outstanding token of that type; for the refresh key it
+# also means every stored refresh_tokens row stops working.
+SECRET_KEY=CHANGE_ME
+SECRET_REFRESH_KEY=CHANGE_ME
+
+# ─── Nightly refresh ─────────────────────────────────────────────────────────
+# Shared secret for POST /admin/refresh/**. Blank disables those endpoints rather than opening
+# them. Must match ADMIN_TOKEN in scripts/nightly-refresh.sh.
+scrape.admin-token=CHANGE_ME
+
+# Note there is no scrape.* scheduling block any more. Enqueue is triggered by the launchd agent
+# (scripts/nightly-refresh.sh), because Spring's cron counts down on a monotonic clock that stalls
+# while the Mac sleeps, so a 3am fire was late or skipped entirely. There is no retention cron
+# either: DynamoDB TTL expires articles seven days after they are written.
+
+# ─── Authentication ──────────────────────────────────────────────────────────
+# Cookie-based JWTs only: POST /auth/signin sets an httpOnly accessToken (1h) and a refreshToken
+# (7d, rotated on each use). There is no single-user bypass, so every request without a valid
+# accessToken is rejected and the login screen is required. /admin/** is unauthenticated by the
+# security chain because the launchd agent has no cookie; it is guarded by scrape.admin-token
+# below instead.
+
+# ─── Rate limiting ───────────────────────────────────────────────────────────
+# Token bucket keyed by client IP. Note that every browser request arrives via the Next.js
+# rewrite, so the address is the proxy's and all traffic shares one bucket - page loads, assets and
+# dashboard polling all draw from the same allowance.
+security.rate-limit.enabled=true
+security.rate-limit.capacity=600
+security.rate-limit.refill-tokens=600
+security.rate-limit.refill-seconds=60
+
+# ─── Personalization ─────────────────────────────────────────────────────────
+# The For You feed scores articles at request time against a per-user term profile in user_scores.
+# Weights live here so they can be retuned without a rebuild: with one user and a few dozen
+# articles there is no way to fit these from data, so they are hand-set and meant to be adjusted by
+# reading the explain payload the endpoint returns.
+personalization.enabled=true
+
+# For You ranks over the full retention window, which is DynamoDB's 7-day TTL; the Default and
+# Keyword views keep their 24h filter. Articles older than 24h are reachable only here.
+personalization.window-hours=168
+personalization.feed-limit=10
+
+# Term affinity decays on read rather than by a rewrite job, so there is no scheduled task to fall
+# behind while the machine sleeps. 21 days is roughly "a topic you stopped clicking a month ago is
+# halved".
+personalization.half-life-days=21
+
+personalization.weight.term-affinity=1.0
+personalization.weight.source-affinity=2.0
+personalization.weight.keyword-boost=3.0
+personalization.weight.recency=2.0
+
+# Applied after the greedy re-rank, not during scoring: penalises the Nth article sharing a top
+# term with one already placed, so a single story cannot take the whole top of the feed.
+personalization.weight.diversity-penalty=0.5
+
+# Shown-and-ignored. This is what makes the 7-day window tolerable: without it the feed re-surfaces
+# everything you already scrolled past.
+personalization.weight.seen-penalty=1.5
+
+# Positions held for high-recency, low-affinity items so the profile cannot collapse into a filter
+# bubble it never collects the evidence to escape.
+personalization.serendipity-slots=2
