@@ -1,23 +1,24 @@
 {
   "name": "article_grabber",
-  "version": "1.0.0",
-  "description": "",
-  "main": "server.js",
-  "scripts": {
-    "start": "node server.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
-  },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Signal scraper. An SQS-triggered Lambda: reads one site's RSS feed, fetches and summarizes each new article, and writes it to DynamoDB.",
+  "main": "article_grabber.js",
   "type": "module",
+  "license": "ISC",
+  "scripts": {
+    "test": "echo \"No unit tests for the scraper\" && exit 1",
+    "invoke": "node --input-type=module -e \"import('./article_grabber.js').then(m => m.handler({ Records: [{ body: JSON.stringify({ username: 'local', website: process.argv[1], mode: process.argv[2] || 'default' }) }] })).then(r => console.log('result:', r))\""
+  },
   "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.1004.0",
+    "@aws-sdk/lib-dynamodb": "^3.1004.0",
     "@google/genai": "^1.46.0",
+    "@sparticuz/chromium": "^133.0.0",
     "axios": "^1.13.5",
     "cheerio": "^1.2.0",
     "dotenv": "^17.3.1",
     "p-limit": "^6.2.0",
-    "pg": "^8.13.1",
-    "playwright": "^1.58.2"
+    "playwright-core": "^1.58.2"
   }
 }

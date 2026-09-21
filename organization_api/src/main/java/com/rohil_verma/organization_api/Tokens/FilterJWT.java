@@ -24,14 +24,13 @@ import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 
+
 @Component
 public class FilterJWT extends OncePerRequestFilter {
 
-    @Autowired
-    private ServiceJWT jwtService;
+    private final ServiceJWT jwtService;
 
-    @Autowired
-    private UserDetailsService userDetailsService;
+    private final UserDetailsService userDetailsService;
 
     /**
      * Rate limit, keyed by client IP. Note that every browser request arrives via the
@@ -41,14 +40,6 @@ public class FilterJWT extends OncePerRequestFilter {
      * below what the feed's poll-until-plateau loop needs and returned 429 during a normal
      * Update Feed, which is longer now that summarization runs on a local model.
      */
-    /**
-     * Single-user mode. When set, every request is authenticated as this user and the JWT
-     * check is skipped entirely - there is no login page in the local build. Leave blank to
-     * restore normal cookie-based auth.
-     */
-    @Value("${app.single-user.username:}")
-    private String singleUserName;
-
     @Value("${security.rate-limit.enabled:true}")
     private boolean rateLimitEnabled;
 
@@ -62,6 +53,12 @@ public class FilterJWT extends OncePerRequestFilter {
     private long rateLimitRefillSeconds;
 
     private final Map<String, Bucket> buckets = new ConcurrentHashMap<>();
+
+    FilterJWT(ServiceJWT jwtService, UserDetailsService userDetailsService) {
+        this.jwtService = jwtService;
+        this.userDetailsService = userDetailsService;
+    }
+
     @Override
     protected void doFilterInternal(HttpServletRequest request, HttpServletResponse response, FilterChain chain)
             throws ServletException, IOException {
@@ -76,12 +73,6 @@ public class FilterJWT extends OncePerRequestFilter {
                 response.getWriter().write("Too many requests");
                 return;
             }
-        }
-
-        if (singleUserName != null && !singleUserName.isBlank()) {
-            authenticateAs(singleUserName, request);
-            chain.doFilter(request, response);
-            return;
         }
 
         if (cookies == null) {
@@ -121,20 +112,6 @@ public class FilterJWT extends OncePerRequestFilter {
             response.sendError(HttpServletResponse.SC_UNAUTHORIZED, "Unauthorized");
         }
     }
-    /** Puts the given user into the SecurityContext so @AuthenticationPrincipal resolves. */
-    private void authenticateAs(String username, HttpServletRequest request) {
-        if (SecurityContextHolder.getContext().getAuthentication() != null) return;
-        try {
-            UserDetails userDetails = userDetailsService.loadUserByUsername(username);
-            UsernamePasswordAuthenticationToken authentication =
-                new UsernamePasswordAuthenticationToken(userDetails, null, userDetails.getAuthorities());
-            SecurityContextHolder.getContext().setAuthentication(authentication);
-        } catch (Exception e) {
-            logger.error("Single-user mode is configured for '" + username
-                + "' but that account could not be loaded: " + e);
-        }
-    }
-
     private Bucket newBucket() {
         return Bucket.builder()
             .addLimit(limit -> limit

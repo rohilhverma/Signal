@@ -14,8 +14,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
-import com.rohil_verma.organization_api.Articles.Article;
-import com.rohil_verma.organization_api.Articles.ArticleRepository;
+import com.rohil_verma.organization_api.DynamoDB.DynamoArticleRepository;
 
 /**
  * Distills raw interaction activity into the per-user term profile in {@code user_scores},
@@ -47,7 +46,7 @@ public class ProfileService {
     static final double MIN_TERM_WEIGHT = 0.1;
 
     @Autowired
-    private ArticleRepository articleRepository;
+    private DynamoArticleRepository articleRepository;
 
     @Autowired
     private TermExtractor termExtractor;
@@ -79,21 +78,21 @@ public class ProfileService {
             return;
         }
 
-        Optional<Article> found = articleRepository.findFirstByLink(link);
+        Optional<DynamoArticleRepository.TermSource> found = articleRepository.findTermSourceByLink(link);
         if (found.isEmpty()) {
             log.debug("profile: skipping activity for {}, article no longer exists", link);
             return;
         }
 
-        Article article = found.get();
+        DynamoArticleRepository.TermSource article = found.get();
         List<String> terms = termExtractor.extract(
-            article.getTitle(), article.getSummaryDefault(), article.getTopics());
+            article.title(), article.summaryDefault(), article.topics());
         if (terms.isEmpty()) {
             log.debug("profile: no terms extracted for {}", link);
             return;
         }
 
-        Map<String, String> labels = displayLabels(article.getTopics());
+        Map<String, String> labels = displayLabels(article.topics());
 
         for (int rank = 0; rank < terms.size(); rank++) {
             double weight = Math.max(MIN_TERM_WEIGHT, Math.pow(RANK_DECAY, rank));

@@ -15,6 +15,7 @@ import org.springframework.http.ResponseCookie;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.AuthenticationException;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.stereotype.Service;
 
@@ -184,8 +185,27 @@ public class ServiceJWT {
 
     ResponseEntity<Void> signin(AuthRequest request) {
         log.info("[AUTH] POST /auth/signin - username: " + request.getUsername());
-        authenticationManager.authenticate(
-                new UsernamePasswordAuthenticationToken(request.getUsername(), request.getPassword()));
+        try {
+            authenticationManager.authenticate(
+                    new UsernamePasswordAuthenticationToken(request.getUsername(), request.getPassword()));
+        } catch (AuthenticationException e) {
+            // Everything a credential check can throw arrives here, and all of it is answered
+            // the same way so the endpoint cannot be used to enumerate accounts. Two routes
+            // lead in: a wrong password raises BadCredentialsException, and anything
+            // unexpected from UserDetailsService - including the NoSuchElementException its
+            // bare orElseThrow() raises for an unknown username - is wrapped by
+            // DaoAuthenticationProvider in an InternalAuthenticationServiceException. Both are
+            // AuthenticationExceptions, which is also why this endpoint already answered 401
+            // before being caught here: ExceptionTranslationFilter routes any
+            // AuthenticationException escaping a controller to the entry point.
+            //
+            // The exception's simple name is logged because "wrong password" and "the account
+            // lookup itself failed" are different problems to chase, and the client is told
+            // neither - it gets a bare 401 either way.
+            log.info("[AUTH] Signin failed for: " + request.getUsername()
+                    + " (" + e.getClass().getSimpleName() + ")");
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+        }
         User user = userRepository.findByUsername(request.getUsername()).orElseThrow();
         String refreshToken = refreshTokenBuilder(user, request.isRememberMe());
         String accessToken = tokenBuilder(user.getUsername(), "jwt");

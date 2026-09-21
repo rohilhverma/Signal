@@ -18,8 +18,8 @@ import java.util.stream.Collectors;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
-import com.rohil_verma.organization_api.Articles.ArticleFeedView;
-import com.rohil_verma.organization_api.Articles.ArticleRepository;
+import com.rohil_verma.organization_api.DynamoDB.DynamoArticleRepository;
+import com.rohil_verma.organization_api.DynamoDB.FeedArticle;
 import com.rohil_verma.organization_api.UserActivity;
 import com.rohil_verma.organization_api.Users.User;
 import com.rohil_verma.organization_api.Users.UserActivityRepository;
@@ -71,7 +71,7 @@ public class PersonalizationService {
     private PersonalizationProperties properties;
 
     @Autowired
-    private ArticleRepository articleRepository;
+    private DynamoArticleRepository articleRepository;
 
     @Autowired
     private UserRepository userRepository;
@@ -102,11 +102,13 @@ public class PersonalizationService {
         }
 
         Instant cutoff = now.minus(properties.getWindowHours(), ChronoUnit.HOURS);
-        List<ArticleFeedView> views = articleRepository
-            .findByWebsiteURLInAndProcessedAtAfterOrderByProcessedAtDesc(sites, cutoff);
+        // Flows through the same repository read as the dashboard, but over
+        // personalization.window-hours (168h / 7 days) rather than the dashboard's 24h: articles
+        // older than a day are reachable only through this endpoint, by design.
+        List<FeedArticle> views = articleRepository.findFeedArticles(sites, cutoff);
 
         List<Candidate> candidates = new ArrayList<>();
-        for (ArticleFeedView v : views) {
+        for (FeedArticle v : views) {
             if (v.getLink() == null || v.getTitle() == null) continue;
             List<String> terms = termExtractor.extract(v.getTitle(), v.getSummaryDefault(), v.getTopics());
             candidates.add(new Candidate(

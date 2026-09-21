@@ -1,32 +1,43 @@
 import * as cheerio from 'cheerio'
 import axios from 'axios'
-import { chromium } from 'playwright'
+import { chromium } from 'playwright-core'
+import chromiumLambda from '@sparticuz/chromium'
 import pLimit from 'p-limit'
-import pg from 'pg'
+import { DynamoDBClient } from '@aws-sdk/client-dynamodb'
+import { DynamoDBDocumentClient, GetCommand, PutCommand, UpdateCommand } from '@aws-sdk/lib-dynamodb'
 import { summarize, batchSize } from './summarizer.js'
+// dotenv is only for running this file by hand; on Lambda the environment comes from the
+// function configuration.
 import "dotenv/config"
 
-const { Pool } = pg
+// ─── The store ───────────────────────────────────────────────────────────────
+//
+// One DynamoDB table, PK `websiteURLs`, SK one of:
+//   "RSS"                 the site row (rss_url, siteName, paywall) - no TTL
+//   "<article link>"      one article, TTL'd seven days after it was written
+//   PK = <guid>, SK = "EXISTS"   the dedupe marker. Note the PK is the GUID, not the site, so
+//                                these never turn up in a site query.
+//
+// `website` arrives in the SQS message already normalised by the API and is used verbatim as
+// the partition key. That is deliberate. The previous version derived the key here as
+// `new URL(url).host` while the API derived its own key with a different rule (it prepends
+// `www.` to single-dot domains), so a site could be written under one key and read under
+// another and nothing failed loudly — the feed was just empty for that source. One key, made
+// once, on the side that owns it.
 
-// Connection settings come from DATABASE_URL if present, otherwise discrete
-// PG* vars, otherwise local defaults.
-const pool = new Pool(
-    process.env.DATABASE_URL
-        ? { connectionString: process.env.DATABASE_URL }
-        : {
-            host: process.env.PGHOST || 'localhost',
-            port: Number(process.env.PGPORT || 5432),
-            database: process.env.PGDATABASE || 'postgres',
-            user: process.env.PGUSER || 'rohilverma',
-            password: process.env.PGPASSWORD,
-        }
-)
-pool.on('error', (err) => console.error('Postgres pool error:', err.message))
+const TABLE = process.env.DYNAMODB_TABLE || 'MyScrapingHandlerTable'
+const SITE_SK = 'RSS'
+const EXISTS_SK = 'EXISTS'
+const TTL_DAYS = 7
 
-export { pool }
+const dynamo = DynamoDBDocumentClient.from(new DynamoDBClient({}))
 
-// Only ever launch this many headless browsers at once, no matter how many
-// requests are in flight.
+function ttlEpochSeconds() {
+    return Math.floor(Date.now() / 1000) + TTL_DAYS * 24 * 60 * 60
+}
+
+// Only ever launch this many headless browsers at once, no matter how many articles are being
+// fetched. A Lambda invocation handles a single site, so this bounds concurrency within it.
 const browserLimit = pLimit(Number(process.env.BROWSER_CONCURRENCY || 3))
 
 const cutoffMs = 24 * 60 * 60 * 1000
@@ -126,101 +137,123 @@ const paywallPhrases = [
 ];
 
 
-// Returns the site_feeds row for a host, or null.
-async function dbGet(websiteUrl) {
-    const { rows } = await pool.query(
-        'SELECT website_url, rss_url, site_name, paywall FROM site_feeds WHERE website_url = $1',
-        [websiteUrl]
-    )
-    return rows[0] || null
+// ─── DynamoDB access ─────────────────────────────────────────────────────────
+
+/** The site row for a host, or null if this site has never been scraped. */
+async function dbGetSite(siteKey) {
+    const { Item } = await dynamo.send(new GetCommand({
+        TableName: TABLE,
+        Key: { websiteURLs: siteKey, SK: SITE_SK }
+    }))
+    return Item || null
 }
 
-// Upsert the cached RSS URL for a host without disturbing site_name / paywall.
-async function dbPut(websiteUrl, rssUrl) {
-    return pool.query(
-        `INSERT INTO site_feeds (website_url, rss_url)
-         VALUES ($1, $2)
-         ON CONFLICT (website_url) DO UPDATE SET rss_url = EXCLUDED.rss_url`,
-        [websiteUrl, rssUrl]
-    )
+/** Caches the feed URL that worked, without disturbing siteName / paywall. */
+async function dbPutRss(siteKey, rssUrl) {
+    return dynamo.send(new UpdateCommand({
+        TableName: TABLE,
+        Key: { websiteURLs: siteKey, SK: SITE_SK },
+        UpdateExpression: 'SET rss_url = :u',
+        ExpressionAttributeValues: { ':u': rssUrl }
+    }))
 }
 
-async function dbSiteName(websiteUrl, siteName) {
-    return pool.query(
-        `INSERT INTO site_feeds (website_url, site_name)
-         VALUES ($1, $2)
-         ON CONFLICT (website_url) DO UPDATE SET site_name = EXCLUDED.site_name`,
-        [websiteUrl, siteName]
-    )
+async function dbPutSiteName(siteKey, siteName) {
+    return dynamo.send(new UpdateCommand({
+        TableName: TABLE,
+        Key: { websiteURLs: siteKey, SK: SITE_SK },
+        UpdateExpression: 'SET siteName = :n',
+        ExpressionAttributeValues: { ':n': siteName }
+    }))
 }
 
-async function dbGUID(guid){
-    return pool.query(
-        `INSERT INTO seen_guids (guid, processed_at)
-         VALUES ($1, $2)
-         ON CONFLICT (guid) DO UPDATE SET processed_at = EXCLUDED.processed_at`,
-        [String(guid), new Date()]
-    )
+/**
+ * Dedupe marker. Keyed by the GUID itself rather than by the site, so the same GUID appearing
+ * on two sites never lets one suppress the other. TTL'd like the article: without that, a story
+ * that resurfaces in a feed a week later would be dropped forever instead of re-summarized.
+ */
+async function markGuidSeen(guid) {
+    return dynamo.send(new PutCommand({
+        TableName: TABLE,
+        Item: { websiteURLs: String(guid), SK: EXISTS_SK, ttl: ttlEpochSeconds() }
+    }))
 }
 
-async function guidChecker(guid){
-    const { rows } = await pool.query('SELECT 1 FROM seen_guids WHERE guid = $1', [String(guid)])
-    return rows.length > 0
+async function guidSeen(guid) {
+    const { Item } = await dynamo.send(new GetCommand({
+        TableName: TABLE,
+        Key: { websiteURLs: String(guid), SK: EXISTS_SK }
+    }))
+    return Boolean(Item)
 }
 
-// Upsert one article. Only the summary column for THIS mode is ever written —
-// the other two slots are left untouched so a user-requested resummarization
-// is never wiped by a later scrape. `topics` is not mode-specific, so unlike
-// the summary columns it is unconditionally overwritten on every upsert, same
-// as title/article_text/word_count/etc.
-async function newArticle(item, summary, mode, topics){
+// ─── Article writes ──────────────────────────────────────────────────────────
+
+/**
+ * Writes one article, and touches nothing else on its item.
+ *
+ * <p>An UpdateItem rather than a PutItem, and that is the entire point: re-scraping a site
+ * re-touches articles it has already summarized, and a Put replaces the item wholesale, blanking
+ * the two summary depths it is not currently generating. UpdateItem sets exactly the attributes
+ * named here — which is the behaviour the SQL `ON CONFLICT ... DO UPDATE SET` had to spell out one
+ * column at a time.
+ *
+ * <p>The three depths are three separate attributes, not a three-slot list indexed by mode. A list
+ * forces `SET summary[1] = :s`, which DynamoDB rejects outright when `summary` does not exist yet,
+ * so a brand-new article could not be written in a single call. They also match the column names
+ * the Postgres build used, the attribute names {@code summaryColumn()} already maps to, and the
+ * field names the API sends — and they let the dashboard query project the deep dive away, since
+ * it is several times the size of the other two combined.
+ */
+async function putArticle(item, summary, mode, topics) {
     const column = summaryColumn(mode)
-    // toTopics() in summarizer.js always returns an array (possibly empty),
-    // but stay defensive here in case a caller ever passes undefined directly.
-    const topicsStr = Array.isArray(topics) ? topics.join(',') : ''
-    const sql = `
-        INSERT INTO articles
-            (website_url, link, title, ${column}, article_text, word_count, published_at, processed_at, paywall, topics)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-        ON CONFLICT ON CONSTRAINT uk_articles_site_link DO UPDATE SET
-            title = EXCLUDED.title,
-            ${column} = EXCLUDED.${column},
-            article_text = EXCLUDED.article_text,
-            word_count = EXCLUDED.word_count,
-            published_at = EXCLUDED.published_at,
-            processed_at = EXCLUDED.processed_at,
-            paywall = EXCLUDED.paywall,
-            topics = EXCLUDED.topics`
-    return pool.query(sql, [
-        item.websiteName,
-        item.link,
-        item.title_,
-        summary,
-        item.articleText,
-        item.articleText.trim().split(/\s+/).length,
-        item.publishedAt,
-        new Date(),
-        item.paywall,
-        topicsStr
-    ])
+    // toTopics() in summarizer.js always returns an array (possibly empty); stay defensive in
+    // case a caller ever passes undefined directly.
+    const tagList = Array.isArray(topics) ? topics : []
+
+    return dynamo.send(new UpdateCommand({
+        TableName: TABLE,
+        Key: { websiteURLs: item.websiteName, SK: item.link },
+        UpdateExpression:
+            'SET title = :title, articleText = :text, word_count = :words, #d = :date, ' +
+            'processedAt = :processed, paywall = :paywall, topics = :topics, #l = :link, ' +
+            column + ' = :summary, #ttl = :ttl',
+        // `date` and `ttl` are DynamoDB reserved words and must be aliased before use as attribute
+        // names; `link` is aliased alongside them for consistency.
+        ExpressionAttributeNames: { '#d': 'date', '#l': 'link', '#ttl': 'ttl' },
+        ExpressionAttributeValues: {
+            ':title': item.title_,
+            ':text': item.articleText,
+            ':words': item.articleText.trim().split(/\s+/).length,
+            ':date': item.publishedAt,
+            ':processed': new Date().toISOString(),
+            ':paywall': item.paywall,
+            ':topics': tagList,
+            ':link': item.link,
+            ':summary': summary,
+            ':ttl': ttlEpochSeconds()
+        }
+    }))
 }
 
-async function flagRSSPaywall(websiteUrl){
-    return pool.query(
-        `INSERT INTO site_feeds (website_url, paywall)
-         VALUES ($1, TRUE)
-         ON CONFLICT (website_url) DO UPDATE SET paywall = TRUE`,
-        [websiteUrl]
-    )
+async function flagSitePaywall(siteKey) {
+    return dynamo.send(new UpdateCommand({
+        TableName: TABLE,
+        Key: { websiteURLs: siteKey, SK: SITE_SK },
+        UpdateExpression: 'SET paywall = :p',
+        ExpressionAttributeValues: { ':p': true }
+    }))
 }
 
-// Rewrite a single summary slot on an existing article, leaving the others alone.
-async function updateSummary(item, summary, mode){
+/** Rewrite a single depth on an existing article, leaving the other two alone. */
+async function updateSummary(item, summary, mode) {
     const column = summaryColumn(mode)
-    return pool.query(
-        `UPDATE articles SET ${column} = $1 WHERE website_url = $2 AND link = $3`,
-        [summary, item.websiteName, item.link]
-    )
+    return dynamo.send(new UpdateCommand({
+        TableName: TABLE,
+        Key: { websiteURLs: item.websiteName, SK: item.link },
+        UpdateExpression: 'SET ' + column + ' = :summary',
+        ExpressionAttributeValues: { ':summary': summary }
+    }))
 }
 
 const rssPaths = [
@@ -281,14 +314,21 @@ export class FeedNotFoundError extends Error {
     }
 }
 
-export async function initialScraper(url, mode = "default") {
+/**
+ * Scrapes one site.
+ *
+ * `siteKey` is the partition key the API put in the SQS message, used verbatim and never
+ * re-derived here — that identity between the write key and the read key is the point. The scheme
+ * is assumed only for fetching, never for storing.
+ */
+export async function initialScraper(siteKey, mode = "default") {
     if (!SUMMARY_COLUMNS[mode]) { throw new Error(`Unknown content mode: ${mode}`) }
-    const cleanURL = new URL(url)
+    const cleanURL = new URL(/^https?:\/\//i.test(siteKey) ? siteKey : `https://${siteKey}`)
     const cutoff = new Date(Date.now() - cutoffMs)
-    const data = await linkBuilder(cleanURL)
+    const data = await linkBuilder(cleanURL, siteKey)
     if (!data){
         console.log("Couldn't grab RSS feed")
-        throw new FeedNotFoundError(url)
+        throw new FeedNotFoundError(siteKey)
     }
     const $ = cheerio.load(data, {xmlMode:true})
     let format = 'rss'
@@ -307,7 +347,7 @@ export async function initialScraper(url, mode = "default") {
         const rssTitle = $(formats[format].websiteTitle).text().trim()
         webName = (rssTitle && rssTitle.length <= 40) ? rssTitle : cleanURL.hostname.replace('www.', '')
     }
-    await dbSiteName(cleanURL.host, webName)
+    await dbPutSiteName(siteKey, webName)
     let existingCount=0
     let newCount=0
     let scrapedCount=0
@@ -315,8 +355,7 @@ export async function initialScraper(url, mode = "default") {
     let articleList=[]
     for (const element of items) {
         const guid = $(element).find(formats[format].guid).text()
-        const exists = await guidChecker(guid)
-        if (exists){
+        if (await guidSeen(guid)){
             existingCount+=1
             console.log(`GUID exists, skipping: ${guid}`)
             continue
@@ -348,7 +387,7 @@ export async function initialScraper(url, mode = "default") {
         if (!articleTextAndTime.articleText || textLen < minChars) {
             if (articleTextAndTime.paywallStatus) {
                 console.log(`Paywall article with insufficient text (${textLen} chars), GUID saved: ${link}`)
-                await dbGUID(guid)
+                await markGuidSeen(guid)
                 paywallCount+=1
             } else {
                 console.log(`Empty or too-short article text, skipping entirely: ${link}`)
@@ -364,7 +403,7 @@ export async function initialScraper(url, mode = "default") {
             console.log(`Paywall article saved with flag (${textLen} chars): ${link}`)
         }
         const articleContent = {
-            websiteName: cleanURL.host,
+            websiteName: siteKey,
             link: link,
             guid_: guid,
             title_:title,
@@ -381,8 +420,8 @@ export async function initialScraper(url, mode = "default") {
     console.log(`Paywall: ${paywallCount}/${totalProcessed} articles`)
     let sitePaywalled = false
     if (totalProcessed > 0 && paywallCount / totalProcessed >= 0.7) {
-        console.log(`70%+ paywall rate detected for ${url}, flagging RSS row`)
-        await flagRSSPaywall(cleanURL.host)
+        console.log(`70%+ paywall rate detected for ${siteKey}, flagging site row`)
+        await flagSitePaywall(siteKey)
         sitePaywalled = true
     }
     const chunkSize = batchSize()
@@ -407,8 +446,8 @@ export async function initialScraper(url, mode = "default") {
         for (let j = 0; j < chunk.length; j++) {
             if (summarization[j]) {
                 try {
-                    await dbGUID(chunk[j].guid_)
-                    await newArticle(chunk[j], summarization[j].summary, mode, summarization[j].topics)
+                    await markGuidSeen(chunk[j].guid_)
+                    await putArticle(chunk[j], summarization[j].summary, mode, summarization[j].topics)
                     newCount+=1
                     console.log(`  [${j}] Saved article with summary: ${chunk[j].title_}`)
                 } catch (saveErr) {
@@ -419,17 +458,17 @@ export async function initialScraper(url, mode = "default") {
             }
         }
     }
-    console.log({website_:url,
+    console.log({website_:siteKey,
                 newArticles_: newCount,
                 existingArticles_: existingCount
     })
     if (!sitePaywalled) {
         // A site flagged as paywalled on an earlier run stays flagged.
-        const feed = await dbGet(cleanURL.host)
+        const feed = await dbGetSite(siteKey)
         sitePaywalled = feed?.paywall === true
     }
     return {
-        website: url,
+        website: siteKey,
         articlesAdded: newCount,
         paywalled: sitePaywalled,
         existingArticles: existingCount
@@ -486,11 +525,10 @@ async function scrapeArticles(url) {
     return { articleText, publishDate, paywallStatus }
 }
 
-async function linkBuilder(url) {
+async function linkBuilder(url, siteKey) {
     const baseUrl = url.origin
-    const pk = url.host
 
-    const cached = await dbGet(pk)
+    const cached = await dbGetSite(siteKey)
     if (cached && cached.rss_url) {
         try {
             const response = await axios.get(cached.rss_url, axiosConfig)
@@ -519,20 +557,33 @@ async function linkBuilder(url) {
             }
         }
         try {
-            await dbPut(pk, testURL)
+            await dbPutRss(siteKey, testURL)
         } catch(err) {
-            console.log(`Postgres site_feeds upsert failed: ${err.message}`)
+            console.log(`DynamoDB site-row update failed: ${err.message}`)
         }
         return feedData
     }
     return null
 }
 
+/**
+ * @sparticuz/chromium ships a Chromium build sized for a Lambda package; playwright-core is
+ * just the driver for it. Full `playwright` cannot be used here — it downloads its own browser
+ * at install time, which does not survive into a deployment package.
+ */
+async function launchBrowser() {
+    return chromium.launch({
+        args: chromiumLambda.args,
+        executablePath: await chromiumLambda.executablePath(),
+        headless: true,
+    })
+}
+
 // Fallback path only (429 / 403 / 503). Every launch goes through browserLimit
 // so simultaneous blocked sites can't spawn unbounded Chromium processes.
 async function javascriptBypasser(url){
     return browserLimit(async () => {
-        const browser = await chromium.launch({ headless: true })
+        const browser = await launchBrowser()
         const page = await browser.newPage()
         try {
             const baseUrl = new URL(url).origin
@@ -554,7 +605,7 @@ async function javascriptBypasser(url){
 
 async function javascriptHTMLScraper(url){
     return browserLimit(async () => {
-        const browser = await chromium.launch({ headless: true })
+        const browser = await launchBrowser()
         const page = await browser.newPage()
         try {
             console.log(`Playwright is trying to grab Article HTML: ${url}`)
@@ -570,3 +621,45 @@ async function javascriptHTMLScraper(url){
         }
     })
 }
+
+// ─── SQS entry point ─────────────────────────────────────────────────────────
+
+/**
+ * One SQS message per site: `{ username, website, mode }`, sent by the API's MessageSender.
+ *
+ * Exactly one record is expected, because the event-source mapping is configured with batch size
+ * 1. Anything else is logged and skipped rather than guessed at.
+ *
+ * Throwing on failure is deliberate: the message has to fail so SQS redelivers it and the redrive
+ * policy can eventually move it to the dead-letter queue. That is the retry behaviour the Postgres
+ * queue implemented in application code with `5^attempts`-minute backoff, and a dead-letter queue
+ * is what makes a permanently broken site visible instead of silently retried forever. Swallowing
+ * the error would drop that site's refresh with nothing recorded. Nothing is waiting on a response
+ * either way — the frontend polls the feed until the article count plateaus.
+ */
+export const handler = async (event) => {
+    const records = event?.Records ?? []
+    if (records.length !== 1) {
+        console.warn(`Expected exactly 1 SQS record, got ${records.length} - nothing scraped`)
+        return { scraped: 0 }
+    }
+
+    let body
+    try {
+        body = JSON.parse(records[0].body)
+    } catch (err) {
+        throw new Error(`SQS body is not valid JSON: ${err.message}`)
+    }
+
+    const { username, website, mode = 'default' } = body ?? {}
+    if (!website || typeof website !== 'string') {
+        throw new Error('SQS message is missing "website"')
+    }
+
+    console.log(`[scrape] user=${username} website=${website} mode=${mode}`)
+    const result = await initialScraper(website, mode)
+    console.log(`[scrape] done user=${username} website=${website} ` +
+        `added=${result.articlesAdded} paywalled=${result.paywalled}`)
+    return { scraped: 1, website, articlesAdded: result.articlesAdded }
+}
+

@@ -15,11 +15,9 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import com.rohil_verma.organization_api.Articles.ArticleRepository;
-import com.rohil_verma.organization_api.Articles.ArticleService;
-import com.rohil_verma.organization_api.Jobs.ScrapeJob;
-import com.rohil_verma.organization_api.Jobs.ScrapeJobRunner;
-import com.rohil_verma.organization_api.Jobs.ScrapeJobService;
+import com.rohil_verma.organization_api.DynamoDB.DynamoArticleRepository;
+import com.rohil_verma.organization_api.DynamoDB.DynamoService;
+import com.rohil_verma.organization_api.DynamoDB.MessageSender;
 import com.rohil_verma.organization_api.Personalization.ProfileService;
 import com.rohil_verma.organization_api.UserActivity;
 
@@ -36,7 +34,7 @@ public class UserService {
     private SubscriptionRepository subscriptionRepository;
 
     @Autowired
-    private ArticleRepository articleRepository;
+    private DynamoArticleRepository articleRepository;
 
     @Autowired
     private UserActivityRepository userActivityRepository;
@@ -45,10 +43,7 @@ public class UserService {
     private UserActiveDayRepository userActiveDayRepository;
 
     @Autowired
-    private ScrapeJobService scrapeJobService;
-
-    @Autowired
-    private ScrapeJobRunner scrapeJobRunner;
+    private MessageSender messageSender;
 
     @Autowired
     private ProfileService profileService;
@@ -156,10 +151,8 @@ public class UserService {
         // payload omits muted sources, so a client-side tally would report every muted
         // source as empty.
         List<String> sites = user.getSubscriptions().keySet().stream().toList();
-        Map<String, Long> counts = sites.isEmpty() ? Map.of() : articleRepository
-            .countByWebsiteURLSince(sites, now.minus(ArticleService.FRESHNESS_HOURS, ChronoUnit.HOURS))
-            .stream()
-            .collect(Collectors.toMap(row -> (String) row[0], row -> (Long) row[1]));
+        Map<String, Integer> counts = sites.isEmpty() ? Map.of() : articleRepository
+            .countArticlesPerSite(sites, now.minus(DynamoService.FRESHNESS_HOURS, ChronoUnit.HOURS));
 
         return user.getSubscriptions().values().stream()
             .sorted(Comparator.comparing(Subscription::getWebsiteURL))
@@ -168,7 +161,7 @@ public class UserService {
                 sub.getContentMode() == null ? "" : sub.getContentMode(),
                 sub.isMuted(now) ? sub.getMutedUntil() : null,
                 sub.isMuted(now) && sub.isMutedIndefinitely(),
-                counts.getOrDefault(sub.getWebsiteURL(), 0L).intValue()))
+                counts.getOrDefault(sub.getWebsiteURL(), 0)))
             .toList();
     }
 
@@ -274,8 +267,9 @@ public class UserService {
             }
             user.addSubscription(normalizedURL, websiteContentMode);
             userRepository.save(user);
-            scrapeJobService.enqueue(username, getSubscriptionModesForUser(username), ScrapeJob.SOURCE_USER);
-            scrapeJobRunner.kick();
+            // Fan out to the Lambda over SQS. Fire-and-forget, exactly as the queue this
+            // replaces was: the frontend polls the feed until the article count plateaus.
+            messageSender.sendScrapingTasks(username, getSubscriptionModesForUser(username));
             return ResponseEntity.ok("User Saved");
         } catch (Exception e) {
             return ResponseEntity.status(500).body("Failed to Save User");
@@ -295,8 +289,7 @@ public class UserService {
 
     public ResponseEntity<String> sendScrapingTask(String username) {
         try {
-            scrapeJobService.enqueue(username, getSubscriptionModesForUser(username), ScrapeJob.SOURCE_USER);
-            scrapeJobRunner.kick();
+            messageSender.sendScrapingTasks(username, getSubscriptionModesForUser(username));
             return ResponseEntity.ok("Scraping Task Sent");
         } catch (Exception e) {
             e.printStackTrace();

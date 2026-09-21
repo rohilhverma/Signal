@@ -6,9 +6,10 @@ import { PreferencesProvider } from "./context/PreferencesContext";
 import { AppStateProvider } from "./context/AppStateContext";
 import { ToastProvider } from "./context/ToastContext";
 import { AppLayout } from "./layout/AppLayout";
+import { LoginScreen } from "./LoginScreen";
 
 function SignalBootstrap() {
-  const { isAuthenticated, isInitializing } = useAuth();
+  const { isAuthenticated, isInitializing, bootstrapError } = useAuth();
 
   if (isInitializing) {
     return (
@@ -30,10 +31,18 @@ function SignalBootstrap() {
     );
   }
 
-  // Single-user local build: there is no login. If the user could not be loaded the API
-  // is unreachable or app.single-user.username is not set, so say that rather than
-  // rendering an empty dashboard.
-  if (!isAuthenticated) {
+  // Signed out and unreachable are different problems, and "sign in" is the wrong advice for
+  // the second one. isAuthenticated is checked first, so a sign-in that succeeds after a
+  // failed first load renders the app rather than a stale diagnostic.
+  if (isAuthenticated) {
+    return (
+      <AppStateProvider>
+        <AppLayout />
+      </AppStateProvider>
+    );
+  }
+
+  if (bootstrapError === "unreachable") {
     return (
       <div
         className="signal-app"
@@ -55,19 +64,12 @@ function SignalBootstrap() {
         <div style={{ fontWeight: 600, color: "var(--sg-text, #2b2721)" }}>
           Can&apos;t reach the Signal API
         </div>
-        <div>
-          Check that the Spring app is running on :8080 and that
-          {" "}<code>app.single-user.username</code> names an existing account.
-        </div>
+        <div>Check that the Spring app is running on :8080.</div>
       </div>
     );
   }
 
-  return (
-    <AppStateProvider>
-      <AppLayout />
-    </AppStateProvider>
-  );
+  return <LoginScreen />;
 }
 
 export function SignalApp() {
